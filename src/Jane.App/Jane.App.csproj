@@ -8,7 +8,12 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <RootNamespace>Jane.App</RootNamespace>
     <AssemblyName>Jane</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="H.NotifyIcon.Wpf" Version="$(HNotifyIconVersion)" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Jane.Core\Jane.Core.csproj" />
