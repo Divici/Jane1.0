@@ -810,3 +810,44 @@ product invariant and is asserted unconditionally** — if that fails, the user'
 the pill instead of their document. A move to some *third* window re-establishes the baseline and
 continues, up to three times; past that the run is declared too unstable to mean anything and
 fails rather than passing vacuously.
+
+### P6-1 — Phase 6 built as one supervised instance, per P0-1 (2026-09-02)
+
+Implemented as the Phase 0 probe indicated: **one** `ollama.exe` child on `:11435`, with the route
+chosen per request by `options.num_gpu`. `OLLAMA_LLM_LIBRARY` and `CUDA_VISIBLE_DEVICES` are not
+set at all, because pinning is no longer a server-lifetime property. The CPU-pinning assertion
+survives unchanged and is now enforced at runtime, not just in `doctor`: `LlmSession` re-reads
+`/api/ps` after every CPU-routed completion and throws if `size_vram > 0`, which marks the CPU
+route unusable rather than letting Jane contend for the card while the user believes it is
+protected.
+
+The routing policy lives in `Jane.Core` with no Win32, taking a plain `GpuReading` record. That is
+what makes "a borderless-windowed game routes to LLM-off" assertable without launching a game —
+and the sensors are then tested separately against the real shell and driver, including a real
+borderless `WS_POPUP` window covering the monitor.
+
+### P6-2 — Two Win32 delegate-lifetime bugs in the test harnesses (2026-09-02)
+
+Both presented identically — `A callback was made on a garbage collected delegate` from inside
+`CreateWindowEx`, killing the whole test process rather than failing a test — and both are worth
+recording because they are easy to write again:
+
+1. **A window procedure reached only through `Marshal.GetFunctionPointerForDelegate` is not rooted
+   by the runtime.** Holding it in an instance field is not enough; the JIT may consider the field
+   dead the moment the pointer has been taken.
+2. **A window class named after anything reusable gets reused.** The first harness derived its
+   class name from the managed thread id, the second from the process id. `RegisterClassEx` then
+   fails silently for the second instance, `CreateWindowEx` succeeds using the *first* instance's
+   already-freed procedure, and the process dies.
+
+Both harnesses now register a single process-lifetime window class whose procedure is a `static`
+delegate in a `static readonly` field, and quit on `WM_DESTROY` rather than `WM_CLOSE` so the pump
+ends however the window went away.
+
+### P6-3 — Foreground-dependent tests must be serialised and must retry (2026-09-02)
+
+Windows refuses `SetForegroundWindow` while another process holds the foreground lock, which is
+constantly true when several tests each create a window. Two governor tests skipped for that
+reason on the first run — a silent loss of exactly the coverage the phase is about. They now
+retry with `BringWindowToTop` between attempts and the class is in its own xUnit collection so it
+owns the desktop while it runs. All 154 Jane.Windows tests now run with **zero skips**.
