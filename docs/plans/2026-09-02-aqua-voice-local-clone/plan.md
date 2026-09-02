@@ -851,3 +851,49 @@ constantly true when several tests each create a window. Two governor tests skip
 reason on the first run — a silent loss of exactly the coverage the phase is about. They now
 retry with `BringWindowToTop` between attempts and the class is in its own xUnit collection so it
 owns the desktop while it runs. All 154 Jane.Windows tests now run with **zero skips**.
+
+### P13-1 — Two bugs the signing script only revealed by being run (2026-09-02)
+
+**Wrong EKU OID.** The script constrained the certificate to `1.3.6.1.5.5.7.3.2`, described in its
+own comment as "the code-signing EKU". It is not — that is **Client Authentication**. Code Signing
+is `1.3.6.1.5.5.7.3.3`. `Set-AuthenticodeSignature` refused the certificate outright with *"The
+specified certificate is not suitable for code signing."* `NoticeTests` now asserts both the
+presence of the correct OID and the absence of the wrong one.
+
+**A signing failure leaked the private key.** Key removal ran after signing, so the first (failing)
+run left a code-signing private key sitting in `Cert:\CurrentUser\My` — precisely the moment it is
+most likely to be forgotten, because the script stopped early and the operator moves on. Removal
+moved into a `finally`.
+
+Both were found by running the script, not by reading it. Neither would have been caught by a test
+that only inspected the file.
+
+### P13-2 — The final acceptance step is deliberately left to the user (2026-09-02)
+
+Phase 13's acceptance is *"run `build/install.ps1`, reboot, confirm Jane starts in the tray, and
+dictate successfully into an elevated PowerShell window."* Two parts of that are not mine to do
+unprompted: **installing a self-signed certificate into `LocalMachine\Root` is a machine-wide,
+hard-to-reverse change to what this computer trusts**, and the step after it is a reboot.
+
+Everything short of that is verified:
+
+- `publish.ps1` produces a 179 MB single-file self-contained `Jane.exe` with `uiAccess="true"`
+  embedded (confirmed by scanning the binary) and `NOTICE.md` beside it.
+- Launching that binary unsigned from outside `%ProgramFiles%` fails with exactly the documented
+  *"A referral was returned from the server"* — the behaviour that forced Phase 4's two-manifest
+  split, now demonstrated on the real artefact.
+- A new `-SkipTrustStore` mode exercises the whole signing path — certificate generation, the EKU
+  constraint, the PFX export, the signature, and the private-key removal — **without touching
+  machine-wide trust**. Verified: EKU reads `Code Signing (1.3.6.1.5.5.7.3.3)`, the binary is
+  signed, and no private key is left in any store.
+
+To finish, from an elevated PowerShell:
+
+```powershell
+./build/publish.ps1
+./build/sign-uiaccess.ps1 -Path artifacts\publish\Jane.exe -PfxPath D:\keys\jane-signing.pfx
+./build/install.ps1
+```
+
+Skipping signing entirely is a supported outcome: Jane runs fully, and only injection into elevated
+windows is unavailable.
