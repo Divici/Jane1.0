@@ -1,11 +1,14 @@
+using System.IO;
 using System.Windows.Threading;
 using Jane.Core.Abstractions;
 using Jane.Core.Pipeline;
 using Jane.Core.Platform;
 using Jane.Core.Settings;
+using Jane.Llm;
 using Jane.Speech;
 using Jane.Windows.Audio;
 using Jane.Windows.Automation;
+using Jane.Windows.Gpu;
 using Jane.Windows.Hotkeys;
 using Jane.Windows.Injection;
 
@@ -28,6 +31,7 @@ public sealed class JaneHost : IAsyncDisposable
     private readonly SileroVadGate _vad;
     private readonly LowLevelKeyboardHook _hotkeys;
     private readonly IOverlayPresenter _overlay;
+    private readonly LlmStack? _llm;
     private bool _paused;
     private bool _disposed;
 
@@ -39,8 +43,10 @@ public sealed class JaneHost : IAsyncDisposable
         SileroVadGate vad,
         LowLevelKeyboardHook hotkeys,
         DictationOrchestrator orchestrator,
-        IOverlayPresenter overlay)
+        IOverlayPresenter overlay,
+        LlmStack? llm)
     {
+        _llm = llm;
         _dispatcher = dispatcher;
         _settings = settings;
         _capture = capture;
@@ -87,14 +93,25 @@ public sealed class JaneHost : IAsyncDisposable
             new SendInputInjector(focus, focus, sendInput, modifierGate),
             new ClipboardInjector(focus, focus, clipboard, sendInput, modifierGate));
 
+        // The LLM stack is optional: if Ollama cannot be started, or the user has turned
+        // formatting off, Jane still dictates and simply injects raw Parakeet output -- the same
+        // path a running game takes.
+        var llm = current.Llm.Enabled
+            ? LlmStack.Create(Path.Combine(RepoOrInstallRoot(), "tools", "ollama", "ollama.exe"), current)
+            : null;
+
+        // Phase 7's formatter goes inside this decorator; the decorator is what applies the
+        // governor's decision, so "skip the LLM while gaming" is one place rather than a branch
+        // in every formatter.
+        ITranscriptFormatter formatter = llm is null
+            ? new PassthroughFormatter()
+            : new RoutedFormatter(new PassthroughFormatter(), () => llm.CurrentRoute);
+
         var orchestrator = new DictationOrchestrator(
             capture,
             recognizer,
             new SileroVoiceActivityGate(vad),
-            // Phase 7 swaps this for the real LLM formatter. Parakeet already emits punctuation
-            // and casing, so raw output is presentable text in the meantime -- and this is also
-            // exactly what the in-game route injects once Phase 6 lands.
-            new PassthroughFormatter(),
+            formatter,
             injector,
             focus);
 
@@ -107,7 +124,27 @@ public sealed class JaneHost : IAsyncDisposable
                 MaxDuration = TimeSpan.FromMilliseconds(current.Hotkey.MaxToggleDurationMs),
             });
 
-        return new JaneHost(dispatcher, settings, capture, recognizer, vad, hotkeys, orchestrator, overlay);
+        return new JaneHost(dispatcher, settings, capture, recognizer, vad, hotkeys, orchestrator, overlay, llm);
+    }
+
+    /// <summary>
+    /// Finds the directory holding <c>tools/ollama</c>: the repository root during development,
+    /// the install directory once published.
+    /// </summary>
+    private static string RepoOrInstallRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null)
+        {
+            if (Directory.Exists(Path.Combine(dir.FullName, "tools", "ollama")))
+            {
+                return dir.FullName;
+            }
+
+            dir = dir.Parent;
+        }
+
+        return AppContext.BaseDirectory;
     }
 
     private static ISpeechRecognizer BuildRecognizer(JanePaths paths, SpeechSettings speech)
@@ -140,6 +177,13 @@ public sealed class JaneHost : IAsyncDisposable
     {
         Orchestrator.StateChanged += OnPipelineStateChanged;
 
+        if (_llm is not null)
+        {
+            // Started before the hook, so the first dictation never races the server coming up.
+            // A failure marks the GPU route degraded and Jane falls through to raw output.
+            await _llm.StartAsync(cancellationToken);
+        }
+
         await Orchestrator.StartAsync(cancellationToken);
 
         _hotkeys.HotkeyEvent += OnHotkeyEvent;
@@ -167,6 +211,13 @@ public sealed class JaneHost : IAsyncDisposable
         if (_paused)
         {
             return;
+        }
+
+        // The governor is consulted at key-down, not at format time, so the warm-up overlaps with
+        // the user speaking rather than starting once they have finished.
+        if (hotkeyEvent.Kind == HotkeyEventKind.Pressed)
+        {
+            _llm?.BeginDictation(CancellationToken.None);
         }
 
         Orchestrator.OnHotkey(hotkeyEvent);
@@ -197,6 +248,11 @@ public sealed class JaneHost : IAsyncDisposable
         _hotkeys.Dispose();
 
         await Orchestrator.DisposeAsync();
+
+        if (_llm is not null)
+        {
+            await _llm.DisposeAsync();
+        }
 
         _vad.Dispose();
         _settings.Dispose();
