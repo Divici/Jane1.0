@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using Jane.Core.Abstractions;
+using Jane.Core.History;
+using Jane.Core.Modes;
 
 namespace Jane.Core.Pipeline;
 
@@ -39,6 +41,11 @@ public sealed class DictationOrchestrator : IAsyncDisposable
     private readonly ITranscriptFormatter _formatter;
     private readonly ITextInjector _injector;
     private readonly IFocusTracker _focus;
+    private readonly IDictationContextSource _context;
+    private readonly ModeSelector _modes;
+    private readonly EditModeHandler _edit;
+    private readonly ISelectionRewriter _rewriter;
+    private readonly ISubmitter? _submitter;
     private readonly OrchestratorOptions _options;
 
     private readonly SemaphoreSlim _pipelineGate = new(1, 1);
@@ -58,8 +65,22 @@ public sealed class DictationOrchestrator : IAsyncDisposable
         ITranscriptFormatter formatter,
         ITextInjector injector,
         IFocusTracker focus,
-        OrchestratorOptions? options = null)
+        OrchestratorOptions? options = null,
+        IDictationContextSource? context = null,
+        ISelectionRewriter? rewriter = null,
+        ISubmitter? submitter = null,
+        ModeSelector? modes = null,
+        UndoStack? undo = null)
     {
+        _context = context ?? NullContextSource.Instance;
+        _modes = modes ?? new ModeSelector();
+        _edit = new EditModeHandler(undo ?? new UndoStack());
+
+        // Without a rewriter, Edit Mode can still delete, replace and undo -- all of which are
+        // local operations. Only "make it shorter" needs a model, and it says so rather than
+        // silently doing nothing.
+        _rewriter = rewriter ?? UnavailableRewriter.Instance;
+        _submitter = submitter;
         _audio = audio;
         _recognizer = recognizer;
         _vad = vad;
@@ -175,6 +196,10 @@ public sealed class DictationOrchestrator : IAsyncDisposable
             // the user was speaking.
             _target = _focus.GetForegroundWindow();
 
+            // Started at key-down so the cross-process round trips overlap with the user speaking
+            // rather than being paid after they stop.
+            _context.BeginRead(_target);
+
             _audio.Arm();
             Transition(new PipelineStatus(PipelineState.Arming));
         }
@@ -232,11 +257,22 @@ public sealed class DictationOrchestrator : IAsyncDisposable
                 return;
             }
 
+            // Collected here rather than at key-down: the read was *started* then, concurrent with
+            // speech, so by now it has usually finished and costs nothing. Only a wedged provider
+            // pays the deadline.
+            var context = await _context.CollectAsync(_target, cancellationToken);
+
             Transition(new PipelineStatus(PipelineState.Transcribing));
             RecognitionResult recognition;
             try
             {
-                recognition = await _recognizer.TranscribeAsync(voice.Trimmed, RecognitionOptions.Default, cancellationToken);
+                // Deep Context terms feed contextual biasing, which Phase 1's bench measured at 88%
+                // of greedy -- affordable, so it is on.
+                var options = context.Hotwords.Count > 0
+                    ? new RecognitionOptions(context.Hotwords)
+                    : RecognitionOptions.Default;
+
+                recognition = await _recognizer.TranscribeAsync(voice.Trimmed, options, cancellationToken);
             }
             catch (SpeechEngineUnavailableException ex)
             {
@@ -258,15 +294,57 @@ public sealed class DictationOrchestrator : IAsyncDisposable
                 return;
             }
 
-            // Always through Formatting, even in Phase 5 where the formatter is a pass-through.
-            // The state machine is the plan's, and the overlay collapses Transcribing and
-            // Formatting into one visual anyway, so branching here would buy nothing and would
-            // make the in-game route a different code path from the ordinary one.
+            // Always through Formatting, even when the formatter is a pass-through. The state
+            // machine is the plan's, and the overlay collapses Transcribing and Formatting into
+            // one visual anyway, so branching here would buy nothing and would make the in-game
+            // route a different code path from the ordinary one.
             Transition(new PipelineStatus(PipelineState.Formatting));
-            var text = await _formatter.FormatAsync(
-                recognition.Text, new FormattingContext(_target.ProcessName), cancellationToken);
 
-            if (string.IsNullOrWhiteSpace(text))
+            var mode = _modes.Decide(_target, context.Selection, context.ControlType);
+            var formattingContext = new FormattingContext(
+                _target.ProcessName, context.Hotwords, context.ScreenContext);
+
+            if (mode.Mode == DictationModeKind.EditUnavailable)
+            {
+                // The whole point of BLOCKER #8. Something is selected, Jane cannot read it, and
+                // the alternative to saying so is typing "make it shorter" into the document.
+                Transition(new PipelineStatus(PipelineState.Failed, PipelineFailure.EditModeUnavailable, mode.Reason));
+                return;
+            }
+
+            var submit = false;
+            string text;
+
+            if (mode.Mode == DictationModeKind.Edit)
+            {
+                var command = EditCommandParser.Parse(recognition.Text);
+                var outcome = await _edit.ApplyAsync(
+                    command, mode.Selection,
+                    (selection, instruction, token) =>
+                        _rewriter.RewriteAsync(selection, instruction, formattingContext, token),
+                    cancellationToken);
+
+                if (!outcome.ShouldInject)
+                {
+                    Transition(new PipelineStatus(PipelineState.Failed, PipelineFailure.None, outcome.Message));
+                    return;
+                }
+
+                text = outcome.Text;
+            }
+            else
+            {
+                // "Send it" is stripped before formatting, so the phrase never reaches the LLM and
+                // cannot be turned into prose.
+                (var spoken, submit) = EditCommandParser.StripSendIt(recognition.Text);
+
+                text = string.IsNullOrWhiteSpace(spoken)
+                    ? string.Empty
+                    : await _formatter.FormatAsync(spoken, formattingContext, cancellationToken);
+            }
+
+            // A delete is legitimately empty; a formatted dictation that came back empty is not.
+            if (string.IsNullOrWhiteSpace(text) && mode.Mode != DictationModeKind.Edit)
             {
                 Fail(PipelineFailure.NoSpeech, PipelineStatus.DefaultMessageFor(PipelineFailure.NoSpeech));
                 return;
@@ -280,6 +358,13 @@ public sealed class DictationOrchestrator : IAsyncDisposable
                 Fail(PipelineFailure.InjectionAborted,
                     injection.Detail ?? PipelineStatus.DefaultMessageFor(PipelineFailure.InjectionAborted));
                 return;
+            }
+
+            // Only now. Submitting a form that never received the text is worse than not
+            // submitting, so the Enter waits on a verified injection.
+            if (submit && _submitter is not null)
+            {
+                await _submitter.SubmitAsync(_target, cancellationToken);
             }
 
             Transition(PipelineStatus.Idle);
@@ -345,6 +430,9 @@ public sealed class DictationOrchestrator : IAsyncDisposable
         ex.GetType().Name.Contains("Device", StringComparison.OrdinalIgnoreCase)
             ? ex.Message
             : PipelineStatus.DefaultMessageFor(PipelineFailure.NoMicrophone);
+
+    /// <summary>The undo stack, so a focus change can clear it.</summary>
+    public UndoStack UndoStack => _edit.Undo;
 
     /// <summary>Waits for the current dictation to reach a terminal state. Test and shutdown seam.</summary>
     public async Task WaitForIdleAsync(CancellationToken cancellationToken)

@@ -38,6 +38,7 @@ public sealed class JaneHost : IAsyncDisposable
     private readonly IOverlayPresenter _overlay;
     private readonly LlmStack? _llm;
     private readonly JaneDatabase _database;
+    private readonly UiaContextReader _context;
     private bool _paused;
     private bool _disposed;
 
@@ -54,8 +55,10 @@ public sealed class JaneHost : IAsyncDisposable
         JaneDatabase database,
         UserDictionary dictionary,
         CustomInstructions instructions,
-        HistoryStore history)
+        HistoryStore history,
+        UiaContextReader context)
     {
+        _context = context;
         _llm = llm;
         _database = database;
         Dictionary = dictionary;
@@ -156,13 +159,24 @@ public sealed class JaneHost : IAsyncDisposable
             formatter = new RoutedFormatter(inner, () => llm.CurrentRoute, skipped.Record);
         }
 
+        // Deep Context: one long-lived UIA worker, an 80 ms deadline, and the layered selection
+        // probe that makes Edit Mode safe in Chromium.
+        var uia = UiaContextReader.CreateDefault();
+        var contextSource = new WindowsContextSource(uia, new SelectionProbe(clipboard, sendInput));
+
         var orchestrator = new DictationOrchestrator(
             capture,
             recognizer,
             new SileroVoiceActivityGate(vad),
             formatter,
             injector,
-            focus);
+            focus,
+            options: null,
+            contextSource,
+            llm is null
+                ? UnavailableRewriter.Instance
+                : new LlmSelectionRewriter(llm.CreateClient(), current.Llm.GpuModel, current.Llm.NumCtx),
+            new SendInputSubmitter(sendInput));
 
         var hotkeys = new LowLevelKeyboardHook(
             new HotkeyBinding(current.Hotkey.VirtualKey, []),
@@ -173,7 +187,7 @@ public sealed class JaneHost : IAsyncDisposable
                 MaxDuration = TimeSpan.FromMilliseconds(current.Hotkey.MaxToggleDurationMs),
             });
 
-        return new JaneHost(dispatcher, settings, capture, recognizer, vad, hotkeys, orchestrator, overlay, llm, database, dictionary, instructions, history);
+        return new JaneHost(dispatcher, settings, capture, recognizer, vad, hotkeys, orchestrator, overlay, llm, database, dictionary, instructions, history, uia);
     }
 
     /// <summary>
@@ -303,6 +317,7 @@ public sealed class JaneHost : IAsyncDisposable
             await _llm.DisposeAsync();
         }
 
+        _context.Dispose();
         _vad.Dispose();
         _database.Dispose();
         _settings.Dispose();

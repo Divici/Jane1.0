@@ -1,5 +1,6 @@
 using System.Net;
 using Jane.Core.Abstractions;
+using Jane.Core.Modes;
 using Jane.Core.Pipeline;
 
 namespace Jane.Core.Tests;
@@ -22,9 +23,15 @@ internal sealed class Harness
         Focus = new FakeFocusTracker();
         Sockets = new SocketRecorder();
 
+        ContextSource = new FakeContextSource(this);
+        Submitter = new RecordingSubmitter(Injector);
+
         Orchestrator = new DictationOrchestrator(
             Source, Recognizer, Vad, Formatter, Injector, Focus,
-            new OrchestratorOptions { EngineReadyTimeout = TimeSpan.FromSeconds(10) });
+            new OrchestratorOptions { EngineReadyTimeout = TimeSpan.FromSeconds(10) },
+            ContextSource,
+            new FakeRewriter(this),
+            Submitter);
 
         Orchestrator.StateChanged += (_, status) =>
         {
@@ -50,6 +57,16 @@ internal sealed class Harness
     public FakeFocusTracker Focus { get; }
 
     public SocketRecorder Sockets { get; init; }
+
+    public FakeContextSource ContextSource { get; }
+
+    public RecordingSubmitter Submitter { get; }
+
+    /// <summary>What Deep Context reports: selection and hotwords.</summary>
+    public DictationContext Context { get; init; } = DictationContext.Empty;
+
+    /// <summary>What a selection rewrite returns.</summary>
+    public string Rewrite { get; init; } = "rewritten";
 
     public string Transcript { get; init; } = "hello world";
 
@@ -153,6 +170,9 @@ internal sealed class Harness
             set => _transcript = value;
         }
 
+        /// <summary>The options the last transcription actually received, so biasing can be asserted.</summary>
+        public RecognitionOptions? LastOptions { get; private set; }
+
         public async Task LoadAsync(CancellationToken cancellationToken)
         {
             if (harness.RecognizerLoadGate is { } gate)
@@ -167,6 +187,7 @@ internal sealed class Harness
             ReadOnlyMemory<float> pcm16k, RecognitionOptions options, CancellationToken cancellationToken)
         {
             Calls++;
+            LastOptions = options;
 
             if (harness.RecognizerGate is { } gate)
             {
@@ -186,6 +207,44 @@ internal sealed class Harness
 
         public void Dispose()
         {
+        }
+    }
+
+    internal sealed class FakeContextSource(Harness harness) : IDictationContextSource
+    {
+        public int BeginCount { get; private set; }
+
+        public int CollectCount { get; private set; }
+
+        public void BeginRead(TargetWindow target) => BeginCount++;
+
+        public Task<DictationContext> CollectAsync(TargetWindow target, CancellationToken cancellationToken)
+        {
+            CollectCount++;
+            return Task.FromResult(harness.Context);
+        }
+    }
+
+    internal sealed class FakeRewriter(Harness harness) : ISelectionRewriter
+    {
+        public Task<string> RewriteAsync(
+            string selection, string instruction, FormattingContext context, CancellationToken cancellationToken) =>
+            Task.FromResult(harness.Rewrite);
+    }
+
+    internal sealed class RecordingSubmitter(FakeInjector injector) : ISubmitter
+    {
+        public List<string> Order { get; } = [];
+
+        public Task SubmitAsync(TargetWindow target, CancellationToken cancellationToken)
+        {
+            if (injector.Injected.Count > 0)
+            {
+                Order.Add("inject");
+            }
+
+            Order.Add("submit");
+            return Task.CompletedTask;
         }
     }
 

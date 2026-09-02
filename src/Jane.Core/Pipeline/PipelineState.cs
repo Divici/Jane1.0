@@ -59,6 +59,15 @@ public enum PipelineFailure
     /// <see cref="EngineUnavailable"/>: nothing is broken, the user was simply too quick.
     /// </summary>
     EngineStillLoading,
+
+    /// <summary>
+    /// Something is selected but Jane could not read it, so Edit Mode cannot run here.
+    /// </summary>
+    /// <remarks>
+    /// Said out loud rather than guessed at. The alternative is typing the spoken instruction into
+    /// the user's document as text, which is BLOCKER #8.
+    /// </remarks>
+    EditModeUnavailable,
 }
 
 /// <param name="Failure">Meaningful only when <paramref name="State"/> is <see cref="PipelineState.Failed"/>.</param>
@@ -87,6 +96,8 @@ public sealed record PipelineStatus(
         PipelineState.Formatting => new OverlayStatus(OverlayState.Thinking, "Formatting"),
         PipelineState.Injecting => new OverlayStatus(OverlayState.Injecting, "Inserting"),
         PipelineState.Cancelled => OverlayStatus.Idle,
+        PipelineState.Failed when Failure == PipelineFailure.EditModeUnavailable =>
+            new OverlayStatus(OverlayState.EditModeUnavailable, Message ?? DefaultMessageFor(Failure)),
         PipelineState.Failed => new OverlayStatus(OverlayState.Error, Message ?? DefaultMessageFor(Failure)),
         _ => OverlayStatus.Idle,
     };
@@ -99,6 +110,7 @@ public sealed record PipelineStatus(
         PipelineFailure.RecognitionFailed => "Transcription failed.",
         PipelineFailure.InjectionAborted => "Could not insert the text there.",
         PipelineFailure.EngineStillLoading => "Still starting up. Try again in a moment.",
+        PipelineFailure.EditModeUnavailable => "Edit Mode is not available here.",
         _ => "Something went wrong.",
     };
 }

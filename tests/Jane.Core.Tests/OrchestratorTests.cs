@@ -1,5 +1,6 @@
 using System.Net;
 using Jane.Core.Abstractions;
+using Jane.Core.Modes;
 using Jane.Core.Pipeline;
 
 namespace Jane.Core.Tests;
@@ -295,5 +296,98 @@ public sealed class OrchestratorTests
         Assert.Equal(
             new PipelineStatus(PipelineState.Transcribing).ToOverlayStatus().State,
             new PipelineStatus(PipelineState.Formatting).ToOverlayStatus().State);
+    }
+
+    [Fact]
+    public async Task ALiveSelectionRunsEditModeRatherThanDictating()
+    {
+        var harness = new Harness
+        {
+            Transcript = "make it shorter",
+            Context = new DictationContext(
+                new SelectionResult(true, "The quarterly review has been moved.", SelectionSource.Uia), []),
+            Rewrite = "Review moved.",
+        };
+
+        await harness.DictateAsync();
+
+        // The instruction must not be typed; the rewrite must be.
+        Assert.Equal("Review moved.", Assert.Single(harness.Injector.Injected));
+        Assert.Equal(0, harness.Formatter.Calls);
+    }
+
+    [Fact]
+    public async Task AnUnreadableSelectionInjectsNothingAndSaysEditModeIsUnavailable()
+    {
+        // BLOCKER #8, at the pipeline level. Without this the words "make it shorter" are typed
+        // into the user's document.
+        var harness = new Harness
+        {
+            Transcript = "make it shorter",
+            Context = new DictationContext(SelectionResult.Unreadable, []),
+        };
+
+        await harness.DictateAsync();
+
+        Assert.Empty(harness.Injector.Injected);
+        Assert.Equal(PipelineFailure.EditModeUnavailable, harness.Orchestrator.Status.Failure);
+        Assert.Equal(OverlayState.EditModeUnavailable,
+            harness.Orchestrator.Status.ToOverlayStatus().State);
+    }
+
+    [Fact]
+    public async Task DeepContextTermsReachTheRecogniserAsHotwords()
+    {
+        // The Phase 1 bench measured biasing at 88% of greedy, so it is enabled and the terms
+        // genuinely have to arrive.
+        var harness = new Harness
+        {
+            Context = new DictationContext(SelectionResult.None, ["Kubernetes", "Cilium"]),
+        };
+
+        await harness.DictateAsync();
+
+        Assert.Equal(["Kubernetes", "Cilium"], harness.Recognizer.LastOptions!.Hotwords);
+    }
+
+    [Fact]
+    public async Task SendItStripsThePhraseAndSubmitsOnlyAfterInjection()
+    {
+        var harness = new Harness { Transcript = "tell them it is ready send it" };
+
+        await harness.DictateAsync();
+
+        Assert.Equal("tell them it is ready", Assert.Single(harness.Injector.Injected));
+        Assert.Equal(["inject", "submit"], harness.Submitter.Order);
+    }
+
+    [Fact]
+    public async Task SendItDoesNotSubmitWhenInjectionWasRefused()
+    {
+        // Submitting a form that never received the text is worse than not submitting.
+        var harness = new Harness { Transcript = "ship it send it" };
+        harness.Injector.Result = InjectionResult.Aborted(InjectionFailure.ModifierHeld, "Ctrl held");
+
+        await harness.DictateAsync();
+
+        Assert.DoesNotContain("submit", harness.Submitter.Order);
+    }
+
+    [Fact]
+    public async Task DeepContextIsStartedAtKeyDownNotAfterTheUserStopsSpeaking()
+    {
+        // The whole reason UIA's round trips are affordable: they overlap with speech.
+        var harness = new Harness();
+        await harness.Orchestrator.StartAsync(TestContext.Current.CancellationToken);
+
+        harness.Orchestrator.OnHotkey(new HotkeyEvent(HotkeyEventKind.Pressed, TimeSpan.Zero, DateTimeOffset.Now));
+
+        Assert.Equal(1, harness.ContextSource.BeginCount);
+        Assert.Equal(0, harness.ContextSource.CollectCount);
+
+        harness.Orchestrator.OnHotkey(new HotkeyEvent(HotkeyEventKind.Released, TimeSpan.FromSeconds(1), DateTimeOffset.Now));
+        await harness.Orchestrator.WaitForIdleAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, harness.ContextSource.CollectCount);
     }
 }
