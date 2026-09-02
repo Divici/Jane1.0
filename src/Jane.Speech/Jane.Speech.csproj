@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The meta-package and the per-RID runtime package version independently upstream, so
+         both are pinned and SherpaNativeProbe asserts at load time that the native library
+         actually resolves. A mismatched pair fails at first P/Invoke, not at restore. -->
+    <PackageReference Include="org.k2fsa.sherpa.onnx" Version="$(SherpaOnnxVersion)" />
+    <PackageReference Include="org.k2fsa.sherpa.onnx.runtime.win-x64" Version="$(SherpaOnnxRuntimeVersion)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Jane.Core\Jane.Core.csproj" />
+  </ItemGroup>
+
+</Project>

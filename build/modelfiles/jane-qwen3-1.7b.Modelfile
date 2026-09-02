@@ -1,0 +1,13 @@
+# Jane's CPU-route formatting model (opt-in while a game is running).
+#
+# qwen3:1.7b ships the corrected conditional template -- `{{ if and $.IsThinkSet (not
+# $.Think) }}<think>\n\n</think>{{ end }}` -- so a per-request `think:false` genuinely
+# suppresses reasoning here (verified: 2 eval tokens for "OK"). No template override
+# needed; only the sampling parameters are pinned, and the derived name keeps the CPU
+# route addressed by a Jane-owned tag that cannot drift when the upstream tag is re-pulled.
+FROM qwen3:1.7b
+
+PARAMETER temperature 0.2
+PARAMETER top_p 0.9
+PARAMETER top_k 20
+PARAMETER repeat_penalty 1

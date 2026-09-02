@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- Windows TFM because `route` exercises the real GpuGovernor (NVML + window geometry)
+         and `doctor` enumerates real audio endpoints. -->
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RootNamespace>Jane.Bench</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Jane.Core\Jane.Core.csproj" />
+    <ProjectReference Include="..\Jane.Speech\Jane.Speech.csproj" />
+    <ProjectReference Include="..\Jane.Llm\Jane.Llm.csproj" />
+    <ProjectReference Include="..\Jane.Windows\Jane.Windows.csproj" />
+  </ItemGroup>
+
+</Project>

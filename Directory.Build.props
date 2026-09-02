@@ -1,0 +1,36 @@
+<Project>
+
+  <PropertyGroup>
+    <!-- .NET 6 is also installed on this machine; every project pins net10.0 explicitly so
+         a stray global.json or SDK roll-forward cannot silently retarget the build. -->
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RuntimeIdentifier Condition="'$(IsPublishable)' == 'true'">win-x64</RuntimeIdentifier>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <NoWarn>$(NoWarn);CA1848;CA2007;CA1031</NoWarn>
+  </PropertyGroup>
+
+  <!-- Native/runtime package versions are pinned centrally. sherpa-onnx's meta-package and
+       its per-RID runtime package version independently upstream, so both are pinned here
+       and Jane.Speech asserts at load time that they resolve to a matching native ABI. -->
+  <PropertyGroup>
+    <SherpaOnnxVersion>1.13.5</SherpaOnnxVersion>
+    <SherpaOnnxRuntimeVersion>1.13.5</SherpaOnnxRuntimeVersion>
+    <WhisperNetVersion>1.9.1</WhisperNetVersion>
+    <MicrosoftDataSqliteVersion>10.0.11</MicrosoftDataSqliteVersion>
+    <NAudioVersion>3.0.1</NAudioVersion>
+    <HNotifyIconVersion>2.4.1</HNotifyIconVersion>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(IsTestProject)' == 'true'">
+    <IsPackable>false</IsPackable>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+</Project>

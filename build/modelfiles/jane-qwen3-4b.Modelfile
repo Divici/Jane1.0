@@ -1,0 +1,18 @@
+# Jane's GPU-route formatting model.
+#
+# Derived from qwen3:4b-instruct (Qwen3-4B-Instruct-2507, Apache-2.0) rather than the
+# hybrid-thinking qwen3:4b. Measured on Ollama 0.33.2 / 2026-09-02: qwen3:4b's stock
+# template unconditionally opens a <think> block on the assistant turn, and `think:false`
+# only stops Ollama *parsing* it -- the reasoning is still generated and lands in
+# message.content (131 eval tokens to answer "OK"). Overriding the template to pre-close
+# the block, and even a raw-mode prompt carrying `<think>\n\n</think>\n\n` verbatim, both
+# failed to suppress it. qwen3:4b-instruct is a dedicated non-thinking checkpoint and
+# answers the same prompt in 2 eval tokens.
+FROM qwen3:4b-instruct
+
+# Formatting is a transformation, not a creative task: keep it close to greedy so the
+# same transcript formats the same way twice and the eval baseline stays meaningful.
+PARAMETER temperature 0.2
+PARAMETER top_p 0.9
+PARAMETER top_k 20
+PARAMETER repeat_penalty 1

@@ -497,3 +497,81 @@ Use subagents for independent phases (max 5); keep the main thread for integrati
 After the last phase, run every phase's Acceptance once more end-to-end, then `eval` and update the latency-budget table in `plan.md` from real measurements. Never ask the user questions mid-run.
 
 Report: phase · tests run · what deviated from the plan and why.
+
+## Implementation log
+
+Revisions made during the build, with the evidence that forced them. Locked decisions are
+unchanged unless a lock is listed under `## Blocks`.
+
+### P0-1 — Phase 6 collapses from two Ollama instances to one (2026-09-02)
+
+**Plan said:** two supervised `ollama.exe` instances, GPU on `:11435` and CPU-pinned on
+`:11436`, because "Ollama's device is fixed at server start". The plan flagged this for
+re-test: *"Phase 0 re-tests whether per-request `num_gpu: 0` collapses this to one instance."*
+
+**Probe result: it does.** Against a standalone `ollama.exe` 0.33.2 on `:11435`, a native
+`/api/chat` request carrying `options.num_gpu: 0` loaded the model entirely on the CPU and
+`/api/ps` reported `size_vram: 0`. A second request without the override loaded a different
+model on the GPU (`size_vram: 3873366343`, `nvidia-smi` 5087 MiB). **Both were resident
+simultaneously in the same server process** — one CPU-only, one GPU — so a single instance
+serves both routes.
+
+**Change:** `OllamaSupervisor` supervises **one** child on `:11435`. The route is selected
+per request by `options.num_gpu` (`0` = CPU, omitted = GPU), not by base URL. The CPU-pinning
+assertion is unchanged and still mandatory — `/api/ps` must report `size_vram == 0` for the
+CPU-routed model before the CPU route is considered available. `JANE_OLLAMA_CPU_URL` is
+dropped; `OLLAMA_LLM_LIBRARY` and `CUDA_VISIBLE_DEVICES` are no longer set, since pinning is
+now per request rather than per server.
+
+**What this removes:** a second supervised process, a second port, a second cold-load, and the
+`OLLAMA_LLM_LIBRARY=cpu` Confidence-M unknown (BLOCKER #5) — pinning is now a documented
+per-request option that is asserted after every load rather than an env var that might be
+silently ignored.
+
+### P0-2 — GPU model changes from `qwen3:4b` to `qwen3:4b-instruct` (2026-09-02)
+
+**Assumption revised** (was tagged `(assumed — not in brief)`): *"The GPU Ollama instance runs
+`qwen3:4b`."* The code proved it wrong, which is the sanctioned revision path.
+
+**Evidence.** The locked requirement is "thinking is disabled (`think: false`) … because qwen3
+is a hybrid thinking model whose reasoning tokens would make the latency budget fiction". On
+Ollama 0.33.2, `think: false` does **not** disable thinking for `qwen3:4b`. Its stock template
+ends with an unconditional `<|im_start|>assistant\n<think>\n`, so the block is always opened;
+`think: false` only stops Ollama *parsing* the block, and the reasoning is then generated and
+delivered inside `message.content`. Asked to "Reply with the single word: OK", `qwen3:4b`
+spent **131–203 eval tokens** emitting a paragraph of reasoning plus a stray `</think>` before
+the answer — roughly 3 s of generation for a 2-token reply.
+
+Three fixes were tried and rejected on measurement:
+1. `think: true` and reading only `message.content` — reasoning is correctly separated into
+   `message.thinking`, but it is still *generated*, so the latency is still paid.
+2. A derived Modelfile whose template pre-closes the block
+   (`{{ if and $.IsThinkSet (not $.Think) }}<think>\n\n</think>\n\n{{ end }}`, the shape
+   `qwen3:1.7b` already ships). `/api/show` confirmed the override took, but generation was
+   unchanged.
+3. `/api/generate` with `raw: true` and `<think>\n\n</think>\n\n` written into the prompt
+   verbatim — still 131 eval tokens of reasoning. The checkpoint ignores the pre-closed block.
+
+**Change:** the GPU route uses **`qwen3:4b-instruct`** (Qwen3-4B-Instruct-2507, Apache-2.0,
+same family, same 2.5 GB Q4_K_M footprint), a dedicated non-thinking checkpoint. It answers
+the same prompt in **2 eval tokens, 0.1 s warm**. `qwen3:1.7b` is kept for the CPU route: its
+template honours `.Think` correctly, and `think: false` there also yields 2 eval tokens.
+
+`build/modelfiles/jane-qwen3-4b.Modelfile` and `jane-qwen3-1.7b.Modelfile` derive Jane-owned
+tags from these two bases, pinning sampling parameters (temperature 0.2) so formatting is
+reproducible and the eval baseline stays meaningful. `num_ctx` stays a per-request option, as
+the native-`/api/chat` lock intends.
+
+### P0-3 — `:11434` is unowned on this machine (2026-09-02)
+
+No process listens on `:11434`; the winget desktop app is not installed, as the plan requires.
+`doctor` still probes this every run — the risk is that the desktop app gets installed later.
+
+### P0-4 — sm_120 GPU inference works on `q4_K_M` (2026-09-02)
+
+`ollama#14374`'s MMQ "device kernel image is invalid" crash did **not** reproduce. A cold
+`qwen3:4b` Q4_K_M load onto the RTX 5070 succeeded and generated correctly (`size_vram`
+2.87 GB, `nvidia-smi` 5087 MiB, 203 tokens). Cold load from a cold disk cache was **19.6 s**;
+warm-process reloads were ~1–3 s. The 19.6 s figure is a first-ever-load artefact, but it is
+the number a user meets on the first dictation after a reboot, so Phase 12 measures it rather
+than assuming the warm path. `q8_0` and `fp16` remain probed by `doctor` per the plan.

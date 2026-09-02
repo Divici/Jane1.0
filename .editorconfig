@@ -1,0 +1,38 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+indent_style = space
+trim_trailing_whitespace = true
+
+[*.{cs,csx}]
+indent_size = 4
+dotnet_sort_system_directives_first = true
+csharp_using_directive_placement = outside_namespace:warning
+csharp_style_namespace_declarations = file_scoped:warning
+csharp_prefer_braces = true:silent
+dotnet_style_namespace_match_folder = true:silent
+
+# Analyzer noise that fights the shapes this codebase deliberately uses.
+dotnet_diagnostic.CA1707.severity = none     # underscores in test method names
+dotnet_diagnostic.CA1062.severity = none     # public-surface null checks; Nullable covers it
+dotnet_diagnostic.CA5394.severity = none     # non-crypto Random in bench jitter
+dotnet_diagnostic.IDE0130.severity = none    # namespace-folder match
+
+[*.{xml,csproj,props,targets,config,manifest}]
+indent_size = 2
+
+[*.{json,jsonl}]
+indent_size = 2
+
+[*.{ps1,psm1}]
+indent_size = 4
+
+[*.{md,markdown}]
+indent_size = 2
+trim_trailing_whitespace = false
+
+[*.xaml]
+indent_size = 4

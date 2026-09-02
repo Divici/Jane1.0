@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- net10.0, NOT net10.0-windows. Jane.Core holds the orchestrator, the state machine,
+         the formatter and every policy decision; keeping it off the Windows TFM is what
+         makes those unit-testable without a desktop session, and DoctorTests asserts it. -->
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+
+</Project>
