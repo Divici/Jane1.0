@@ -1,0 +1,23 @@
+# Personal study reference — not project documentation
+STUDY_GUIDE.md
+
+# Build output
+bin/
+obj/
+*.user
+
+# Local tooling and models
+tools/ollama/
+models/
+*.onnx
+*.bin
+*.gguf
+*.tar.bz2
+
+# Bench/eval artifacts
+bench-report.json
+doctor-report.json
+
+# Secrets
+.env
+.env.*
