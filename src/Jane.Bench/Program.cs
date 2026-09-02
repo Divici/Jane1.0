@@ -25,6 +25,10 @@ internal static class Program
                 "bench" => await new BenchCommand(environment).RunAsync(cts.Token),
                 "fixtures" => await BuildFixturesAsync(environment, cts.Token),
                 "route" => await new RouteCommand(environment).RunAsync(cts.Token),
+                "eval" => await new EvalCommand(environment).RunAsync(
+                    args.Contains("--formatting", StringComparer.OrdinalIgnoreCase),
+                    args.Contains("--verbose", StringComparer.OrdinalIgnoreCase),
+                    cts.Token),
                 _ => Help(),
             };
         }

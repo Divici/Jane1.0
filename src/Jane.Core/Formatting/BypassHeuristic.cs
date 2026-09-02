@@ -24,6 +24,12 @@ public enum BypassBlocker
 
     /// <summary>A dictionary entry would rewrite something in this transcript.</summary>
     DictionaryReplacement,
+
+    /// <summary>
+    /// The transcript contains a term the user put in their dictionary. Added after the eval
+    /// measured a false bypass on exactly this case; see BypassHeuristic for the reasoning.
+    /// </summary>
+    DictionaryTerm,
 }
 
 /// <param name="MaxWords">
@@ -129,8 +135,32 @@ public sealed class BypassHeuristic(BypassOptions? options = null)
             reasons.Add($"{policy.Replacements.Count} pending dictionary replacement(s)");
         }
 
+        // A dictionary *term* blocks the bypass too, not only a replacement.
+        //
+        // This was added after the eval measured it. The `code-02` fixture -- "the config lives in
+        // source, jane dot core, settings, settings store dot C S" -- is ten clean words with no
+        // filler, so every other condition passed and the bypass fired, injecting
+        // "jane.core, settings, settings store.cs". Forcing the LLM produced
+        // "Jane.Core, Settings, SettingsStore.cs." The user had put those exact identifiers in
+        // their dictionary, and the bypass skipped the only stage that could act on them.
+        //
+        // Terms were originally treated as spelling hints that never block, on the reasoning that
+        // they change nothing on their own. That is true of the prompt, and false of the outcome:
+        // the reason a term is in the dictionary at all is that the user wants it written a
+        // particular way. The plan's own asymmetry settles it -- a wrong block costs one ~400 ms
+        // call, a wrong bypass silently ships text the user had already told Jane how to write.
+        var matchedTerms = policy.Terms
+            .Where(term => FormattingLexicon.ContainsWholeWord(transcript, term))
+            .ToArray();
+
+        if (matchedTerms.Length > 0)
+        {
+            blockers.Add(BypassBlocker.DictionaryTerm);
+            reasons.Add($"the transcript contains dictionary term(s) {string.Join(", ", matchedTerms)}");
+        }
+
         return blockers.Count == 0
-            ? new BypassDecision(true, [], $"Bypassed: {words} clean words, no instructions, no replacements.", words, hits)
+            ? new BypassDecision(true, [], $"Bypassed: {words} clean words, no instructions, no dictionary terms, no replacements.", words, hits)
             : new BypassDecision(false, blockers, $"Formatted because {string.Join("; ", reasons)}.", words, hits);
     }
 }

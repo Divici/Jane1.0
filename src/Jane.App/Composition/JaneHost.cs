@@ -1,10 +1,10 @@
 using System.IO;
 using System.Windows.Threading;
 using Jane.Core.Abstractions;
-using Jane.Core.Pipeline;
 using Jane.Core.Formatting;
 using Jane.Core.History;
 using Jane.Core.Instructions;
+using Jane.Core.Pipeline;
 using Jane.Core.Platform;
 using Jane.Core.Settings;
 using Jane.Core.Storage;

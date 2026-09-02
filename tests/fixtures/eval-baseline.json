@@ -1,0 +1,152 @@
+{
+  "generatedAt": "2026-09-02T16:15:11.4933279-04:00",
+  "engineId": "parakeet-tdt-0.6b-v2-int8",
+  "routes": [
+    {
+      "route": "Skip",
+      "accuracy": {
+        "wordErrorRate": 0.0658,
+        "punctuationAccuracy": 0.9679,
+        "casingAccuracy": 0.996,
+        "termRecall": 0.8397,
+        "falseBypassRate": 0,
+        "bypassedCount": 0,
+        "fixtureCount": 13
+      },
+      "stages": [
+        {
+          "stage": "asr",
+          "p50Ms": 457.6451,
+          "p95Ms": 714.4662,
+          "coldMs": 2034.4919,
+          "samples": 12
+        },
+        {
+          "stage": "formatting",
+          "p50Ms": 0.0001,
+          "p95Ms": 0.0002,
+          "coldMs": 0.0001,
+          "samples": 12
+        }
+      ],
+      "totalP50Ms": 457.6,
+      "totalP95Ms": 714.5,
+      "totalColdMs": 2034.5,
+      "note": "LLM skipped entirely; raw ASR text injected."
+    },
+    {
+      "route": "Gpu",
+      "accuracy": {
+        "wordErrorRate": 0.0963,
+        "punctuationAccuracy": 0.7418,
+        "casingAccuracy": 0.9846,
+        "termRecall": 1,
+        "falseBypassRate": 0,
+        "bypassedCount": 3,
+        "fixtureCount": 13
+      },
+      "stages": [
+        {
+          "stage": "asr",
+          "p50Ms": 476.9849,
+          "p95Ms": 727.408,
+          "coldMs": 2037.5003,
+          "samples": 12
+        },
+        {
+          "stage": "formatting",
+          "p50Ms": 153.5798,
+          "p95Ms": 220.3141,
+          "coldMs": 1887.625,
+          "samples": 12
+        }
+      ],
+      "totalP50Ms": 624.6,
+      "totalP95Ms": 947.7,
+      "totalColdMs": 3925.1
+    },
+    {
+      "route": "Cpu",
+      "accuracy": {
+        "wordErrorRate": 0.128,
+        "punctuationAccuracy": 0.761,
+        "casingAccuracy": 0.9806,
+        "termRecall": 0.8397,
+        "falseBypassRate": 0,
+        "bypassedCount": 3,
+        "fixtureCount": 13
+      },
+      "stages": [
+        {
+          "stage": "asr",
+          "p50Ms": 460.7394,
+          "p95Ms": 689.5326,
+          "coldMs": 2032.7612,
+          "samples": 12
+        },
+        {
+          "stage": "formatting",
+          "p50Ms": 804.3789,
+          "p95Ms": 955.5179,
+          "coldMs": 3978.1079,
+          "samples": 12
+        }
+      ],
+      "totalP50Ms": 1253.7,
+      "totalP95Ms": 1592.6,
+      "totalColdMs": 6010.9
+    }
+  ],
+  "gates": [
+    {
+      "name": "startup_arming",
+      "budgetMs": 50,
+      "measuredMs": 0,
+      "tolerance": 1.25,
+      "passed": true,
+      "detail": "Key-down to capture armed. Aqua publishes \u003C50 ms; this is the part Jane can actually hold to it."
+    },
+    {
+      "name": "asr_realtime_factor",
+      "budgetMs": 120,
+      "measuredMs": 54.88,
+      "tolerance": 1.25,
+      "passed": true,
+      "detail": "Seconds of compute per second of audio (x1000). Measured over 8.3 s of fixture audio."
+    },
+    {
+      "name": "latency_skip",
+      "budgetMs": 600,
+      "measuredMs": 457.6,
+      "tolerance": 1.25,
+      "passed": true,
+      "detail": "Warm p50 end-to-end on the Skip route."
+    },
+    {
+      "name": "latency_gpu",
+      "budgetMs": 900,
+      "measuredMs": 624.6,
+      "tolerance": 1.25,
+      "passed": true,
+      "detail": "Warm p50 end-to-end on the Gpu route."
+    },
+    {
+      "name": "latency_cpu",
+      "budgetMs": 1800,
+      "measuredMs": 1253.7,
+      "tolerance": 1.25,
+      "passed": true,
+      "detail": "Warm p50 end-to-end on the Cpu route."
+    },
+    {
+      "name": "false_bypass_rate",
+      "budgetMs": 15,
+      "measuredMs": 0,
+      "tolerance": 1,
+      "passed": true,
+      "detail": "Share of bypassed dictations the LLM would have changed. Above this the heuristic is skipping the user\u0027s settings."
+    }
+  ],
+  "startupMs": 0,
+  "passed": true
+}

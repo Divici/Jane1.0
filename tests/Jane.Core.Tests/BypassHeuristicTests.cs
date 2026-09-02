@@ -168,4 +168,49 @@ public sealed class BypassHeuristicTests
         Assert.False(string.IsNullOrWhiteSpace(decision.Reason));
         Assert.Contains("um", decision.Reason, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public void ADictionaryTermInTheTranscriptBlocksTheBypass()
+    {
+        // Found by the eval, not by reasoning. The `code-02` fixture is ten clean words with no
+        // filler -- "the config lives in source, jane dot core, settings, settings store dot C S"
+        // -- so every other condition passed and the bypass fired, injecting
+        // "jane.core, settings, settings store.cs". Forcing the LLM produced
+        // "Jane.Core, Settings, SettingsStore.cs.", which is what the user had put in their
+        // dictionary. The bypass was skipping the only stage that could act on it.
+        var policy = FormattingPolicy.None with { Terms = ["SettingsStore", "Jane.Core"] };
+
+        var decision = new BypassHeuristic().Evaluate(
+            "the config lives in source, jane.core, settings, settings store.cs", Notepad, policy);
+
+        Assert.False(decision.Bypassed);
+        Assert.Contains(BypassBlocker.DictionaryTerm, decision.Blockers);
+        Assert.Contains("SettingsStore", decision.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Jane.Core", decision.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ADictionaryTermThatIsNotSpokenDoesNotBlockTheBypass()
+    {
+        // The other half. If merely *having* a dictionary blocked every bypass, the bypass would
+        // never fire for anyone who uses the feature at all.
+        var policy = FormattingPolicy.None with { Terms = ["Kubernetes", "Prometheus"] };
+
+        var decision = new BypassHeuristic().Evaluate("send it wednesday", Notepad, policy);
+
+        Assert.True(decision.Bypassed);
+        Assert.DoesNotContain(BypassBlocker.DictionaryTerm, decision.Blockers);
+    }
+
+    [Fact]
+    public void DictionaryTermMatchingIsWholeWordAndCaseInsensitive()
+    {
+        var policy = FormattingPolicy.None with { Terms = ["Cilium"] };
+
+        // "silicon" contains no whole-word "cilium"; a substring match would block here wrongly.
+        Assert.True(new BypassHeuristic().Evaluate("check the silicon", Notepad, policy).Bypassed);
+
+        // The user writes the term the way they want it written, not the way ASR renders it.
+        Assert.False(new BypassHeuristic().Evaluate("check cilium please", Notepad, policy).Bypassed);
+    }
 }
