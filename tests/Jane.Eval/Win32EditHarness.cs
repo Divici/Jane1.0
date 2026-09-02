@@ -31,6 +31,11 @@ internal sealed partial class Win32EditHarness : IDisposable
     private readonly ManualResetEventSlim _ready = new(false);
     private readonly WndProc _wndProc;
 
+    // A normal GCHandle, not just a field. Marshal.GetFunctionPointerForDelegate hands Windows a
+    // stub the runtime does not treat as a reference, so once the JIT decides the field is dead
+    // the delegate can be collected while user32 is still calling it.
+    private readonly GCHandle _wndProcHandle;
+
     private nint _window;
     private nint _edit;
     private volatile bool _running = true;
@@ -40,6 +45,7 @@ internal sealed partial class Win32EditHarness : IDisposable
         // The delegate must outlive the window class, or the GC collects the thunk Windows is
         // still calling and the process dies inside user32.
         _wndProc = WindowProcedure;
+        _wndProcHandle = GCHandle.Alloc(_wndProc);
 
         _thread = new Thread(PumpMessages) { IsBackground = true, Name = "Jane E2E edit host" };
         _thread.SetApartmentState(ApartmentState.STA);
@@ -200,6 +206,11 @@ internal sealed partial class Win32EditHarness : IDisposable
 
         _thread.Join(TimeSpan.FromSeconds(3));
         _ready.Dispose();
+
+        if (_wndProcHandle.IsAllocated)
+        {
+            _wndProcHandle.Free();
+        }
     }
 
     /// <summary>Private message: "put the caret in the edit control", posted from the test thread.</summary>

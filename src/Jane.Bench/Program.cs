@@ -24,6 +24,7 @@ internal static class Program
                 "doctor" => await new DoctorCommand(environment).RunAsync(cts.Token),
                 "bench" => await new BenchCommand(environment).RunAsync(cts.Token),
                 "fixtures" => await BuildFixturesAsync(environment, cts.Token),
+                "route" => await new RouteCommand(environment).RunAsync(cts.Token),
                 _ => Help(),
             };
         }
