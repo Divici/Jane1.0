@@ -25,6 +25,7 @@ public sealed partial class GpuGovernorTests
         // fullscreen, and the overwhelming majority of modern games are borderless-windowed, so
         // without this check the governor would miss the game entirely and load a model onto a
         // contended GPU mid-firefight.
+        using var foreground = ForegroundLock.Acquire();
         using var borderless = BorderlessWindow.CoverPrimaryMonitor();
         Assert.SkipWhen(borderless is null, "No interactive desktop: could not create a foreground window.");
 
@@ -41,6 +42,7 @@ public sealed partial class GpuGovernorTests
     {
         // The other half of the claim. A signal that fires for every window would route every
         // dictation to LLM-off and the formatting layer would never run at all.
+        using var foreground = ForegroundLock.Acquire();
         using var small = BorderlessWindow.Sized(120, 120, 640, 400);
         Assert.SkipWhen(small is null, "No interactive desktop: could not create a foreground window.");
 
@@ -53,6 +55,7 @@ public sealed partial class GpuGovernorTests
     [Fact]
     public void GovernorRoutesToLlmOffWhileABorderlessWindowCoversTheMonitor()
     {
+        using var foreground = ForegroundLock.Acquire();
         using var borderless = BorderlessWindow.CoverPrimaryMonitor();
         Assert.SkipWhen(borderless is null, "No interactive desktop: could not create a foreground window.");
 
@@ -70,6 +73,7 @@ public sealed partial class GpuGovernorTests
     [Fact]
     public void GovernorRoutesToTheCpuModelWhenTheUserOptedIn()
     {
+        using var foreground = ForegroundLock.Acquire();
         using var borderless = BorderlessWindow.CoverPrimaryMonitor();
         Assert.SkipWhen(borderless is null, "No interactive desktop: could not create a foreground window.");
 

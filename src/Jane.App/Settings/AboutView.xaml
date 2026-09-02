@@ -1,0 +1,103 @@
+<UserControl x:Class="Jane.App.Settings.AboutView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:c="clr-namespace:Jane.App.Controls">
+
+    <!-- Attribution is a licence obligation, not documentation: Parakeet-TDT-0.6B-v2 is
+         CC-BY-4.0 and Silero VAD is MIT, and both require attribution in the shipped product.
+         NOTICE.md is the canonical text and ships beside the binary; this view is the same
+         information where somebody will actually see it, and a test asserts the two agree. -->
+
+    <UserControl.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="/Jane;component/Controls/Theme.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </UserControl.Resources>
+
+    <ScrollViewer Style="{StaticResource JaneScrollViewer}" Focusable="False">
+        <StackPanel Margin="{StaticResource PadPage}" MaxWidth="820" HorizontalAlignment="Left">
+
+            <TextBlock Style="{StaticResource Display}" Text="About Jane" />
+            <TextBlock Style="{StaticResource Secondary}"
+                       Margin="0,6,0,20"
+                       Text="A push-to-talk dictation tool that runs entirely on this machine. Every model below is free software or freely licensed weights, and none of them costs anything to run." />
+
+            <c:SettingsGroup Header="Speech and language models"
+                             Description="The weights Jane downloads on first run. Two of these licences carry an obligation rather than a courtesy, and this is where it is met.">
+                <ItemsControl ItemsSource="{Binding ModelAttributions}" Focusable="False">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border Margin="0,0,0,10"
+                                    Padding="14,12,14,12"
+                                    CornerRadius="{StaticResource CornerControl}"
+                                    Background="{x:Static c:JaneTheme.WindowBackground}"
+                                    BorderBrush="{x:Static c:JaneTheme.Border}"
+                                    BorderThickness="1">
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Style="{StaticResource Label}" Text="{Binding Component}" />
+                                        <c:Badge Margin="10,0,0,0"
+                                                 VerticalAlignment="Center"
+                                                 Content="{Binding License}"
+                                                 Severity="Success" />
+                                    </StackPanel>
+                                    <TextBlock Style="{StaticResource Secondary}" Margin="0,5,0,0" FontSize="12" Text="{Binding Role}" />
+                                    <TextBlock Style="{StaticResource Caption}" Margin="0,6,0,0" Text="{Binding Detail}"
+                                               Visibility="{Binding Detail, Converter={StaticResource EmptyToCollapsed}}" />
+                                    <TextBlock Style="{StaticResource Caption}" Margin="0,6,0,0">
+                                        <Run Text="Copyright" />
+                                        <Run Text="{Binding Holder, Mode=OneWay}" />
+                                        <Run Text="  -  " />
+                                        <Run Text="{Binding Source, Mode=OneWay}" />
+                                    </TextBlock>
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </c:SettingsGroup>
+
+            <c:SettingsGroup Header="Runtimes and libraries"
+                             Description="Everything else Jane is built from.">
+                <ItemsControl ItemsSource="{Binding RuntimeAttributions}" Focusable="False">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Grid Margin="0,0,0,9">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="190" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Style="{StaticResource Label}" Text="{Binding Component}" VerticalAlignment="Center" />
+                                <TextBlock Grid.Column="1" Style="{StaticResource Secondary}" FontSize="12" Margin="0,0,12,0" Text="{Binding Role}" VerticalAlignment="Center" />
+                                <c:Badge Grid.Column="2" Content="{Binding License}" VerticalAlignment="Center" />
+                            </Grid>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </c:SettingsGroup>
+
+            <c:SettingsGroup Header="What Jane sends, and where">
+                <TextBlock Style="{StaticResource Secondary}" Text="{Binding NetworkStatement}" />
+            </c:SettingsGroup>
+
+            <c:SettingsGroup Header="What Jane keeps">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource Secondary}" Text="{Binding RetentionStatement}" />
+                    <TextBlock Style="{StaticResource Mono}"
+                               Margin="0,12,0,0"
+                               Foreground="{x:Static c:JaneTheme.TextMuted}"
+                               Text="{Binding DatabaseLocation}"
+                               Visibility="{Binding DatabaseLocation, Converter={StaticResource EmptyToCollapsed}}" />
+                    <TextBlock Style="{StaticResource Caption}"
+                               Margin="0,6,0,0"
+                               Text="{Binding SchemaDescription}"
+                               Visibility="{Binding SchemaDescription, Converter={StaticResource EmptyToCollapsed}}" />
+                </StackPanel>
+            </c:SettingsGroup>
+
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

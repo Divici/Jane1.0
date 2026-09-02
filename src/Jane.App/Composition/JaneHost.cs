@@ -1,5 +1,8 @@
 using System.IO;
+using System.Net.Http;
 using System.Windows.Threading;
+using Jane.App.Onboarding;
+using Jane.App.Settings;
 using Jane.Core.Abstractions;
 using Jane.Core.Formatting;
 using Jane.Core.History;
@@ -39,6 +42,9 @@ public sealed class JaneHost : IAsyncDisposable
     private readonly LlmStack? _llm;
     private readonly JaneDatabase _database;
     private readonly UiaContextReader _context;
+    private readonly IFocusTracker _focus;
+    private readonly ITextInjector _injector;
+    private bool _overlayVisible = true;
     private bool _paused;
     private bool _disposed;
 
@@ -56,9 +62,17 @@ public sealed class JaneHost : IAsyncDisposable
         UserDictionary dictionary,
         CustomInstructions instructions,
         HistoryStore history,
-        UiaContextReader context)
+        UiaContextReader context,
+        IFocusTracker focus,
+        ITextInjector injector,
+        SettingsRepository settingsRepository,
+        IModelProvisioner provisioner)
     {
         _context = context;
+        _focus = focus;
+        _injector = injector;
+        Settings2 = settingsRepository;
+        Provisioner = provisioner;
         _llm = llm;
         _database = database;
         Dictionary = dictionary;
@@ -84,6 +98,85 @@ public sealed class JaneHost : IAsyncDisposable
 
     /// <summary>Everything ever dictated, in plaintext, until the user deletes it.</summary>
     public HistoryStore History { get; }
+
+    /// <summary>The database file itself, so the UI can name it when it says what Jane keeps.</summary>
+    public JaneDatabase Database => _database;
+
+    /// <summary>Settings in the database, which is what the settings window edits.</summary>
+    public SettingsRepository Settings2 { get; }
+
+    /// <summary>Downloads model weights and pulls LLM models, for settings and onboarding.</summary>
+    public IModelProvisioner Provisioner { get; }
+
+    public IMicrophoneCatalog Microphones { get; } = new WasapiMicrophoneCatalog();
+
+    public IMicrophoneCheck MicrophoneCheck { get; } = new WasapiMicrophoneCheck();
+
+    /// <summary>Deep Context's privacy gate, editable from settings.</summary>
+    public Blocklist Blocklist => _context.Blocklist;
+
+    public TargetWindow GetForegroundWindow() => _focus.GetForegroundWindow();
+
+    /// <summary>
+    /// Re-injects a history entry, through the same identity check a live dictation uses.
+    /// </summary>
+    /// <remarks>
+    /// A recorded window can be gone, or its handle recycled by a different process. Checking
+    /// before typing is what stops a re-inject putting an old dictation into whatever now occupies
+    /// that handle.
+    /// </remarks>
+    public async Task<bool> ReinjectAsync(HistoryEntry entry, CancellationToken cancellationToken)
+    {
+        var live = _focus.GetForegroundWindow();
+        if (entry.CheckReinject(live) != ReinjectCheck.Ready)
+        {
+            return false;
+        }
+
+        var result = await _injector.InjectAsync(entry.FinalText, live, cancellationToken);
+        return result.Succeeded;
+    }
+
+    /// <summary>Runs one dictation into a scratch buffer, for onboarding's test dictation.</summary>
+    public async Task<string?> TestDictationAsync(CancellationToken cancellationToken)
+    {
+        var captured = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        void OnState(object? sender, PipelineStatus status)
+        {
+            if (status.State is PipelineState.Idle or PipelineState.Failed or PipelineState.Cancelled)
+            {
+                captured.TrySetResult(status.State == PipelineState.Idle ? LastInjectedText : null);
+            }
+        }
+
+        Orchestrator.StateChanged += OnState;
+        try
+        {
+            return await captured.Task.WaitAsync(TimeSpan.FromMinutes(2), cancellationToken);
+        }
+        catch (TimeoutException)
+        {
+            return null;
+        }
+        finally
+        {
+            Orchestrator.StateChanged -= OnState;
+        }
+    }
+
+    /// <summary>The last text Jane injected, so onboarding can show what it heard.</summary>
+    public string? LastInjectedText { get; private set; }
+
+    /// <summary>Shows or hides the floating pill. Aqua's "Show Floating Bar".</summary>
+    public void SetOverlayVisible(bool visible)
+    {
+        _overlayVisible = visible;
+        if (!visible)
+        {
+            _overlay.Hide();
+        }
+    }
 
     public JaneSettings Settings => _settings.Current;
 
@@ -187,7 +280,26 @@ public sealed class JaneHost : IAsyncDisposable
                 MaxDuration = TimeSpan.FromMilliseconds(current.Hotkey.MaxToggleDurationMs),
             });
 
-        return new JaneHost(dispatcher, settings, capture, recognizer, vad, hotkeys, orchestrator, overlay, llm, database, dictionary, instructions, history, uia);
+        var settingsRepository = new SettingsRepository(database);
+        var downloader = new ModelDownloader(new HttpClient(), paths.Models);
+
+        // Onboarding must not leave a manual `ollama pull` as homework, so the provisioner drives
+        // Jane's own supervised server rather than shelling out to the CLI.
+        IModelProvisioner provisioner = llm is null
+            ? new WeightsOnlyProvisioner(downloader)
+            : new ModelProvisioner(
+                downloader,
+                (model, progress, token) => llm.Puller.PullAsync(
+                    model,
+                    progress is null ? null : new Progress<PullProgress>(p =>
+                        progress.Report(new LlmPullProgress(model, p.Completed, p.Total, p.Status))),
+                    token),
+                (model, token) => llm.Puller.IsPresentAsync(model, token));
+
+        return new JaneHost(
+            dispatcher, settings, capture, recognizer, vad, hotkeys, orchestrator, overlay, llm,
+            database, dictionary, instructions, history, uia, focus, injector,
+            settingsRepository, provisioner);
     }
 
     /// <summary>

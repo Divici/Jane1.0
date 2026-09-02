@@ -1,3 +1,4 @@
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
 using Jane.App.Composition;
@@ -26,9 +27,13 @@ public partial class App : Application
     /// <summary>Set to "1" to start the shell without the dictation graph. Diagnostics only.</summary>
     public const string DisablePipelineVariable = "JANE_DISABLE_PIPELINE";
 
+    /// <summary>Set to "1" to suppress the first-run window. Diagnostics and tests only.</summary>
+    public const string SkipOnboardingVariable = "JANE_SKIP_ONBOARDING";
+
     private TrayIcon? _tray;
     private OverlayPresenter? _overlay;
     private JaneHost? _host;
+    private WindowLauncher? _windows;
 
     /// <summary>The tray's command surface.</summary>
     public ITrayCommands? Tray => _tray;
@@ -63,7 +68,19 @@ public partial class App : Application
         try
         {
             _host = JaneHost.Create(Dispatcher, _overlay!);
+            _windows = new WindowLauncher(_host);
+
             await _host.StartAsync(CancellationToken.None);
+
+            // First run: models are not downloaded and no hotkey has been chosen, so onboarding
+            // runs before anything else. It is the only window Jane ever opens by itself.
+            // A test-launched Jane must never open onboarding: it would steal the foreground and
+            // stop being idle, which is the one thing the idle-footprint test is measuring.
+            if (!_host.Settings.OnboardingComplete &&
+                Environment.GetEnvironmentVariable(SkipOnboardingVariable) != "1")
+            {
+                await _windows.RunOnboardingAsync();
+            }
         }
         catch (Exception ex)
         {
@@ -115,10 +132,17 @@ public partial class App : Application
                 _host?.SetMode(HotkeyMode.Toggle);
                 break;
 
+            case TrayCommand.Settings:
+                _windows?.ShowSettings();
+                break;
+
+            case TrayCommand.History:
+                _windows?.ShowHistory();
+                break;
+
             default:
-                // Settings, History and Dictate arrive here with nothing to do yet. They are
-                // wired in Phases 10 and 11; raising the command and doing nothing is honest,
-                // whereas a stub window would look finished.
+                // Dictate and Autostart need nothing here: the tray settles autostart itself, and
+                // "dictate" is the hotkey, which is always listening.
                 break;
         }
     }

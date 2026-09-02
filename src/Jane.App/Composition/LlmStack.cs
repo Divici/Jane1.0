@@ -22,6 +22,7 @@ public sealed class LlmStack : IAsyncDisposable
     private readonly OllamaSupervisor _supervisor;
     private readonly HttpClient _http;
     private readonly OllamaChatClient _client;
+    private readonly OllamaModelPuller _puller;
     private LlmRoute _currentRoute = LlmRoute.Skip;
     private bool _disposed;
 
@@ -34,6 +35,7 @@ public sealed class LlmStack : IAsyncDisposable
     {
         _supervisor = supervisor;
         _http = http;
+        _puller = new OllamaModelPuller(http);
         _client = client;
         Session = session;
         Governor = governor;
@@ -129,6 +131,9 @@ public sealed class LlmStack : IAsyncDisposable
 
     /// <summary>Builds the client the formatter talks to, with the route supplied by the governor.</summary>
     public ILlmClient CreateClient() => new SessionLlmClient(Session, () => _currentRoute, _client);
+
+    /// <summary>Pulls models through the supervised server, so onboarding needs no CLI.</summary>
+    public OllamaModelPuller Puller => _puller;
 
     public async ValueTask DisposeAsync()
     {

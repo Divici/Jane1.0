@@ -32,6 +32,8 @@ public sealed class OverlayFocusTests
         // A window of our own is the ideal foreground holder, but SetForegroundWindow is subject
         // to Windows' foreground lock and can be refused. That is fine: whatever ends up holding
         // foreground is the baseline, and the assertion -- "it did not move" -- is the same.
+        using var foreground = ForegroundLock.Acquire();
+
         var holder = sta.Invoke(() =>
         {
             var window = new Window

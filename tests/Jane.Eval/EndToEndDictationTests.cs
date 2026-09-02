@@ -45,6 +45,7 @@ public sealed class EndToEndDictationTests
         var fixturePath = FindFixture("prose-01.wav");
         Assert.SkipWhen(fixturePath is null, "Fixture corpus has not been built. Run `bench -- fixtures`.");
 
+        using var foreground = ForegroundLock.Acquire();
         using var notepad = Win32EditHarness.Create();
         Assert.SkipWhen(notepad is null, "No interactive desktop: the target window could not take foreground.");
 

@@ -114,6 +114,10 @@ public sealed class IdleFootprintTests
         startInfo.ArgumentList.Add(assemblyPath);
         startInfo.Environment["JANE_DISABLE_PIPELINE"] = withPipeline ? "0" : "1";
 
+        // Onboarding would open a window, take the foreground, and stop the process being idle --
+        // which is the only thing this test measures.
+        startInfo.Environment["JANE_SKIP_ONBOARDING"] = "1";
+
         return Process.Start(startInfo)
             ?? throw new InvalidOperationException("Could not start the Jane process.");
     }

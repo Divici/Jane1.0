@@ -28,8 +28,16 @@ namespace Jane.Windows.Tests;
 /// deliberately wedge.
 /// </para>
 /// </remarks>
-public sealed class ContextReaderTests
+// Serialised with every other foreground-owning test in the solution. These read the *focused*
+// element through UIA, so another test project bringing its own window forward mid-read makes them
+// fail for reasons unrelated to the code. See ForegroundLock.
+[Collection("Foreground")]
+public sealed class ContextReaderTests : IDisposable
 {
+    private readonly ForegroundLock _foreground = ForegroundLock.Acquire();
+
+    public void Dispose() => _foreground.Dispose();
+
     private const string Fixture =
         "Deploy the Kubernetes manifest to the Grafana dashboard. Ask Kate Chen to review UiaWorker and kube_proxy.";
 

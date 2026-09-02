@@ -1,0 +1,455 @@
+<Window x:Class="Jane.App.Onboarding.FirstRunWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:c="clr-namespace:Jane.App.Controls"
+        xmlns:o="clr-namespace:Jane.App.Onboarding"
+        xmlns:s="clr-namespace:Jane.App.Settings"
+        Title="Welcome to Jane"
+        Width="900"
+        Height="700"
+        MinWidth="760"
+        MinHeight="560"
+        WindowStartupLocation="CenterScreen"
+        UseLayoutRounding="True"
+        TextOptions.TextFormattingMode="Ideal"
+        FontSize="13"
+        FontFamily="{x:Static c:JaneTheme.UiFont}"
+        Foreground="{x:Static c:JaneTheme.TextPrimary}"
+        Background="{x:Static c:JaneTheme.WindowBackground}">
+
+    <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="/Jane;component/Controls/Theme.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Window.Resources>
+
+    <Grid x:Name="Root" Background="{x:Static c:JaneTheme.WindowBackground}">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="238" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <!-- ============================= Progress rail ========================== -->
+        <Border Grid.Column="0"
+                Background="{x:Static c:JaneTheme.NavBackground}"
+                BorderBrush="{x:Static c:JaneTheme.Border}"
+                BorderThickness="0,0,1,0"
+                Padding="24,28,20,24">
+            <StackPanel>
+                <TextBlock Style="{StaticResource Display}" Text="Jane" />
+                <TextBlock Style="{StaticResource Caption}"
+                           Margin="0,4,0,26"
+                           AutomationProperties.LiveSetting="Polite"
+                           Text="{Binding StepIndicator}" />
+
+                <ItemsControl ItemsSource="{Binding Pages}" Focusable="False">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Grid Margin="0,0,0,16">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+
+                                <Ellipse Grid.Column="0"
+                                         Width="9"
+                                         Height="9"
+                                         Margin="0,5,12,0"
+                                         VerticalAlignment="Top">
+                                    <!-- Fill lives in the style, not on the element: a local value
+                                         outranks a style trigger, so an inline Fill here would
+                                         leave every dot the same colour for ever. -->
+                                    <Ellipse.Style>
+                                        <Style TargetType="Ellipse">
+                                            <Setter Property="Fill" Value="{x:Static c:JaneTheme.BorderStrong}" />
+                                            <Style.Triggers>
+                                                <DataTrigger Value="True">
+                                                    <DataTrigger.Binding>
+                                                        <MultiBinding Converter="{StaticResource StepReached}">
+                                                            <Binding Path="Step" />
+                                                            <Binding Path="DataContext.Step" RelativeSource="{RelativeSource AncestorType={x:Type Window}}" />
+                                                        </MultiBinding>
+                                                    </DataTrigger.Binding>
+                                                    <Setter Property="Fill" Value="{x:Static c:JaneTheme.Accent}" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Ellipse.Style>
+                                </Ellipse>
+
+                                <TextBlock Grid.Column="1" Text="{Binding Title}">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock" BasedOn="{StaticResource Body}">
+                                            <Setter Property="FontSize" Value="12.5" />
+                                            <Setter Property="Foreground" Value="{x:Static c:JaneTheme.TextMuted}" />
+                                            <Style.Triggers>
+                                                <DataTrigger Value="True">
+                                                    <DataTrigger.Binding>
+                                                        <MultiBinding Converter="{StaticResource StepReached}">
+                                                            <Binding Path="Step" />
+                                                            <Binding Path="DataContext.Step" RelativeSource="{RelativeSource AncestorType={x:Type Window}}" />
+                                                        </MultiBinding>
+                                                    </DataTrigger.Binding>
+                                                    <Setter Property="Foreground" Value="{x:Static c:JaneTheme.TextPrimary}" />
+                                                    <Setter Property="FontWeight" Value="SemiBold" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </Grid>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </StackPanel>
+        </Border>
+
+        <!-- ================================ Page =============================== -->
+        <Grid Grid.Column="1">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <StackPanel Grid.Row="0" Margin="32,30,32,0">
+                <TextBlock Style="{StaticResource Display}" Text="{Binding Page.Title}" />
+                <TextBlock Style="{StaticResource Secondary}" Margin="0,8,0,0" Text="{Binding Page.Summary}" />
+                <Border Style="{StaticResource Divider}" />
+            </StackPanel>
+
+            <TabControl x:Name="Steps" Grid.Row="1" Style="{StaticResource JaneStepHost}">
+
+                <!-- ============================= Welcome ========================= -->
+                <TabItem Tag="{x:Static o:OnboardingStep.Welcome}">
+                    <ScrollViewer Style="{StaticResource JaneScrollViewer}">
+                        <StackPanel Margin="32,4,32,24">
+                            <c:SettingsGroup Header="Everything runs on this machine">
+                                <TextBlock Style="{StaticResource Secondary}"
+                                           Text="Speech recognition runs on your processor, in Jane's own process, holding no video memory at all. Transcript cleanup runs on a language model served locally. There is no telemetry, no crash reporting and no update check: the only network Jane ever uses is the one-time download of the model weights on the next screen, from github.com and huggingface.co, each verified against a checksum pinned in Jane's source." />
+                            </c:SettingsGroup>
+
+                            <c:SettingsGroup Header="What Jane keeps">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource Secondary}"
+                                               Text="Every dictation is stored on this machine in plaintext -- what you said, what was typed, which application it went into -- and kept until you delete it. If you turn on Deep Context, the on-screen text it reads is stored the same way. Audio is never written to disk at any point." />
+                                    <TextBlock Style="{StaticResource Secondary}"
+                                               Margin="0,10,0,0"
+                                               Text="The history window shows all of it, and can erase all of it." />
+                                </StackPanel>
+                            </c:SettingsGroup>
+
+                            <c:SettingsGroup Header="What it costs">
+                                <TextBlock Style="{StaticResource Secondary}"
+                                           Text="Nothing, ever. Every model and library Jane uses is CC-BY-4.0, MIT or Apache-2.0, and every one of them is credited in the About screen and in the NOTICE file beside the binary." />
+                            </c:SettingsGroup>
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+
+                <!-- =========================== Microphone ======================== -->
+                <TabItem Tag="{x:Static o:OnboardingStep.Microphone}">
+                    <ScrollViewer Style="{StaticResource JaneScrollViewer}">
+                        <StackPanel Margin="32,4,32,24">
+                            <c:SettingsGroup Header="Input device">
+                                <StackPanel>
+                                    <c:SettingRow Header="Microphone"
+                                                  Description="Leave this on the Windows default and swapping headsets re-routes automatically. Naming a device pins Jane to it."
+                                                  Note="{Binding MicrophoneStatus}"
+                                                  NoteSeverity="{Binding MicrophoneSeverity}">
+                                        <ComboBox Style="{StaticResource JaneComboBox}"
+                                                  MinWidth="280"
+                                                  ItemsSource="{Binding Microphones}"
+                                                  SelectedItem="{Binding Microphone}"
+                                                  AutomationProperties.AutomationId="OnboardingMicrophone"
+                                                  AutomationProperties.Name="Microphone to dictate with" />
+                                    </c:SettingRow>
+
+                                    <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,6" Text="LEVEL" />
+                                    <ProgressBar Style="{StaticResource JaneProgress}"
+                                                 Height="10"
+                                                 Minimum="0"
+                                                 Maximum="1"
+                                                 Value="{Binding MicrophoneLevel, Mode=OneWay}" />
+
+                                    <Button Style="{StaticResource JaneButton}"
+                                            Margin="0,18,0,0"
+                                            HorizontalAlignment="Left"
+                                            Content="Listen again"
+                                            AutomationProperties.Name="Reopen the microphone and listen again"
+                                            Click="OnRestartMicrophone" />
+                                </StackPanel>
+                            </c:SettingsGroup>
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+
+                <!-- ============================= Models ========================== -->
+                <TabItem Tag="{x:Static o:OnboardingStep.Models}">
+                    <ScrollViewer Style="{StaticResource JaneScrollViewer}">
+                        <StackPanel Margin="32,4,32,24">
+                            <Grid Margin="0,0,0,16">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+
+                                <TextBlock Grid.Column="0"
+                                           Style="{StaticResource Secondary}"
+                                           VerticalAlignment="Center"
+                                           Margin="0,0,16,0"
+                                           AutomationProperties.LiveSetting="Polite"
+                                           Text="{Binding ModelSummary}" />
+
+                                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                    <Button Style="{StaticResource JaneButton}"
+                                            Content="Retry failed"
+                                            AutomationProperties.Name="Retry the downloads that did not finish"
+                                            Click="OnRetryFailed" />
+                                    <Button Style="{StaticResource JanePrimaryButton}"
+                                            Margin="8,0,0,0"
+                                            Content="Download everything"
+                                            AutomationProperties.AutomationId="DownloadEverything"
+                                            AutomationProperties.Name="Download and pull every model Jane needs"
+                                            Click="OnDownloadEverything" />
+                                </StackPanel>
+                            </Grid>
+
+                            <ItemsControl ItemsSource="{Binding Models}" Focusable="False">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Margin="0,0,0,10"
+                                                Padding="16,14,16,14"
+                                                CornerRadius="{StaticResource CornerCard}"
+                                                Background="{x:Static c:JaneTheme.Surface}"
+                                                BorderBrush="{x:Static c:JaneTheme.Border}"
+                                                BorderThickness="1">
+                                            <StackPanel>
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+
+                                                    <StackPanel Grid.Column="0" Margin="0,0,14,0">
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock Style="{StaticResource Label}" Text="{Binding Title}" VerticalAlignment="Center" />
+                                                            <c:Badge Margin="10,0,0,0" VerticalAlignment="Center" Content="{Binding SizeDescription}" />
+                                                            <c:Badge Margin="6,0,0,0" VerticalAlignment="Center" Content="{Binding License}" Severity="Success" />
+                                                            <c:Badge Margin="6,0,0,0"
+                                                                     VerticalAlignment="Center"
+                                                                     Content="Required"
+                                                                     Severity="Warning"
+                                                                     Visibility="{Binding Required, Converter={StaticResource BoolToVisibility}}" />
+                                                        </StackPanel>
+                                                        <TextBlock Style="{StaticResource Secondary}" FontSize="12" Margin="0,6,0,0" Text="{Binding Role}" />
+                                                    </StackPanel>
+
+                                                    <StackPanel Grid.Column="1">
+                                                        <TextBlock Style="{StaticResource Caption}"
+                                                                   HorizontalAlignment="Right"
+                                                                   Margin="0,0,0,6"
+                                                                   AutomationProperties.LiveSetting="Polite"
+                                                                   Foreground="{Binding StatusSeverity, Converter={StaticResource SeverityBrush}}"
+                                                                   Text="{Binding StatusText}" />
+                                                        <Button Style="{StaticResource JaneQuietButton}"
+                                                                HorizontalAlignment="Right"
+                                                                Content="Download"
+                                                                Command="{Binding Download}"
+                                                                AutomationProperties.Name="{Binding Title, StringFormat='Download {0}'}" />
+                                                    </StackPanel>
+                                                </Grid>
+
+                                                <ProgressBar Style="{StaticResource JaneProgress}"
+                                                             Margin="0,12,0,0"
+                                                             Minimum="0"
+                                                             Maximum="100"
+                                                             Value="{Binding ProgressPercent, Mode=OneWay}"
+                                                             Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}" />
+
+                                                <TextBlock Style="{StaticResource Caption}"
+                                                           Margin="0,8,0,0"
+                                                           Text="Resumed from an earlier, interrupted download."
+                                                           Foreground="{x:Static c:JaneTheme.Success}"
+                                                           Visibility="{Binding Resumed, Converter={StaticResource BoolToVisibility}}" />
+
+                                                <Border Margin="0,12,0,0"
+                                                        Padding="12,10,12,10"
+                                                        CornerRadius="{StaticResource CornerControl}"
+                                                        Background="{x:Static c:JaneTheme.DangerWash}"
+                                                        Visibility="{Binding ErrorRemedy, Converter={StaticResource EmptyToCollapsed}}">
+                                                    <StackPanel>
+                                                        <TextBlock Style="{StaticResource Label}"
+                                                                   FontSize="12"
+                                                                   Foreground="{x:Static c:JaneTheme.Danger}"
+                                                                   Text="This one did not finish" />
+                                                        <TextBlock Style="{StaticResource Secondary}"
+                                                                   Margin="0,5,0,0"
+                                                                   FontSize="12"
+                                                                   AutomationProperties.LiveSetting="Assertive"
+                                                                   Text="{Binding ErrorRemedy}" />
+                                                    </StackPanel>
+                                                </Border>
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+
+                <!-- ============================= Hotkey ========================== -->
+                <TabItem Tag="{x:Static o:OnboardingStep.Hotkey}">
+                    <ScrollViewer Style="{StaticResource JaneScrollViewer}">
+                        <StackPanel Margin="32,4,32,24">
+                            <c:SettingsGroup Header="Push-to-talk key">
+                                <StackPanel>
+                                    <c:SettingRow Header="Key"
+                                                  Description="A key that types nothing on its own is the best choice -- Right Ctrl, Right Alt, or a function key above F12. Jane holds a low-level keyboard hook, so it can tell that a bare modifier is being held, which a registered hotkey cannot."
+                                                  Note="{Binding HotkeyStatus.Message}"
+                                                  NoteSeverity="{Binding HotkeySeverity}">
+                                        <StackPanel Orientation="Horizontal">
+                                            <s:HotkeyPicker x:Name="Picker"
+                                                            Style="{StaticResource JaneButton}"
+                                                            MinWidth="150"
+                                                            Binding="{Binding Hotkey, Mode=OneWay}"
+                                                            AutomationProperties.AutomationId="OnboardingHotkeyPicker"
+                                                            Captured="OnHotkeyCaptured" />
+                                            <Button Style="{StaticResource JaneQuietButton}"
+                                                    Margin="8,0,0,0"
+                                                    Content="Use Right Ctrl"
+                                                    AutomationProperties.Name="Use the default push-to-talk key, Right Ctrl"
+                                                    Click="OnUseDefaultHotkey" />
+                                        </StackPanel>
+                                    </c:SettingRow>
+
+                                    <TextBlock Style="{StaticResource Caption}"
+                                               Text="Jane also has a minimum hold, set to 300 ms, so a stray tap of this key costs nothing at all -- no overlay, no models, no text." />
+                                </StackPanel>
+                            </c:SettingsGroup>
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+
+                <!-- ========================== Test dictation ===================== -->
+                <TabItem Tag="{x:Static o:OnboardingStep.TestDictation}">
+                    <ScrollViewer Style="{StaticResource JaneScrollViewer}">
+                        <StackPanel Margin="32,4,32,24">
+                            <c:SettingsGroup Header="Scratch box"
+                                             Description="This is an ordinary text box. Jane types into it exactly the way it will type into your editor, your browser and your terminal -- through the same Win32 input path, into whatever holds the caret.">
+                                <StackPanel>
+                                    <TextBox x:Name="Scratch"
+                                             Style="{StaticResource JaneTextArea}"
+                                             MinHeight="130"
+                                             Text="{Binding ScratchText, UpdateSourceTrigger=PropertyChanged}"
+                                             Tag="Your test dictation will appear here." AutomationProperties.AutomationId="ScratchBox"
+                                             AutomationProperties.Name="Scratch box for your test dictation" />
+
+                                    <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
+                                        <Button Style="{StaticResource JanePrimaryButton}"
+                                                Content="Run a test dictation"
+                                                IsEnabled="{Binding IsDictating, Converter={StaticResource InverseBool}}"
+                                                AutomationProperties.AutomationId="RunTestDictation"
+                                                AutomationProperties.Name="Run a test dictation into the scratch box"
+                                                Click="OnRunTestDictation" />
+                                        <Button Style="{StaticResource JaneQuietButton}"
+                                                Margin="8,0,0,0"
+                                                Content="Clear"
+                                                AutomationProperties.Name="Clear the scratch box"
+                                                Click="OnClearScratch" />
+                                    </StackPanel>
+
+                                    <Border Margin="0,14,0,0"
+                                            Padding="12,10,12,10"
+                                            CornerRadius="{StaticResource CornerControl}"
+                                            Background="{x:Static c:JaneTheme.DangerWash}"
+                                            Visibility="{Binding DictationError, Converter={StaticResource EmptyToCollapsed}}">
+                                        <TextBlock Style="{StaticResource Secondary}"
+                                                   FontSize="12"
+                                                   AutomationProperties.LiveSetting="Assertive"
+                                                   Foreground="{x:Static c:JaneTheme.Danger}"
+                                                   Text="{Binding DictationError}" />
+                                    </Border>
+
+                                    <TextBlock Style="{StaticResource Caption}"
+                                               Margin="0,14,0,0"
+                                               Text="Nothing you type or dictate here is stored as history -- this box is a scratch pad, and Jane forgets it when this window closes." />
+                                </StackPanel>
+                            </c:SettingsGroup>
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+
+                <!-- ============================== Done =========================== -->
+                <TabItem Tag="{x:Static o:OnboardingStep.Done}">
+                    <ScrollViewer Style="{StaticResource JaneScrollViewer}">
+                        <StackPanel Margin="32,4,32,24">
+                            <c:SettingsGroup Header="From here">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource Secondary}">
+                                        <Run Text="Hold" />
+                                        <Run Text="{Binding HotkeyDescription, Mode=OneWay}" FontWeight="SemiBold" Foreground="{x:Static c:JaneTheme.TextPrimary}" />
+                                        <Run Text="anywhere in Windows and speak. Jane types the result into whatever has the caret." />
+                                    </TextBlock>
+                                    <TextBlock Style="{StaticResource Secondary}"
+                                               Margin="0,12,0,0"
+                                               Text="Jane's icon sits in the tray. Right-click it for settings, history, a pause switch for while you game, and to quit." />
+                                    <TextBlock Style="{StaticResource Secondary}"
+                                               Margin="0,12,0,0"
+                                               Text="Select some text first and the same key rewrites it in place instead: say &quot;make this shorter&quot; or &quot;fix the grammar&quot;." />
+                                </StackPanel>
+                            </c:SettingsGroup>
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+            </TabControl>
+
+            <!-- =============================== Footer ============================ -->
+            <Border x:Name="Footer"
+                    Grid.Row="2"
+                    Background="{x:Static c:JaneTheme.NavBackground}"
+                    BorderBrush="{x:Static c:JaneTheme.Border}"
+                    BorderThickness="0,1,0,0"
+                    Padding="32,16,32,16">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <Button Grid.Column="0"
+                            Style="{StaticResource JaneQuietButton}"
+                            Content="_Back"
+                            IsEnabled="{Binding CanGoBack}"
+                            AutomationProperties.AutomationId="OnboardingBack"
+                            AutomationProperties.Name="Go back a step"
+                            Click="OnBack" />
+
+                    <ProgressBar Grid.Column="1"
+                                 Style="{StaticResource JaneProgress}"
+                                 Margin="20,0,20,0"
+                                 VerticalAlignment="Center"
+                                 Minimum="1"
+                                 Maximum="{Binding StepCount}"
+                                 Value="{Binding StepNumber, Mode=OneWay}" />
+
+                    <Button Grid.Column="2"
+                            Style="{StaticResource JanePrimaryButton}"
+                            MinWidth="140"
+                            IsDefault="True"
+                            Content="{Binding NextLabel}"
+                            IsEnabled="{Binding CanGoNext}"
+                            AutomationProperties.AutomationId="OnboardingNext"
+                            AutomationProperties.Name="Continue to the next step"
+                            Click="OnNext" />
+                </Grid>
+            </Border>
+        </Grid>
+
+        <c:ToastHost x:Name="ToastLayer" Grid.Column="1" />
+    </Grid>
+</Window>
