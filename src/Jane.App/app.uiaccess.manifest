@@ -1,16 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Jane's DEVELOPMENT manifest.
+  Jane's SHIPPED manifest. Selected only by -p:JaneUiAccess=true, which build/publish.ps1 passes.
 
-  uiAccess is deliberately false here. Windows refuses to *start* an unsigned uiAccess binary
-  from outside a secure location, failing with "A referral was returned from the server." A
-  single manifest declaring uiAccess="true" would therefore make `dotnet run` on
-  src/Jane.App impossible until Phase 13 signs and installs the binary, which is also every
-  earlier phase's acceptance step.
+  uiAccess lets Jane inject into elevated windows without Jane itself being elevated: the
+  mechanism screen readers use. It requires all three of: this attribute, a digitally signed
+  binary, and installation under a secure location (%ProgramFiles%). Miss any one and Windows
+  refuses to launch the process at all, which is why development builds use app.manifest.
 
-  The shipped manifest is app.uiaccess.manifest, selected by -p:JaneUiAccess=true, which
-  build/publish.ps1 passes. Without uiAccess Jane runs fully; only injection into elevated
-  windows is unavailable, and settings says so.
+  asInvoker matters as much as uiAccess: a dictation tool that demanded admin would be a far
+  larger attack surface than the feature is worth.
 
   Two rules this file learned the hard way: an XML comment may not contain a double hyphen, and
   the Win32 side-by-side parser rejects comments inside <trustInfo>. Either one produces
@@ -22,7 +20,7 @@
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
     <security>
       <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v3">
-        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
+        <requestedExecutionLevel level="asInvoker" uiAccess="true" />
       </requestedPrivileges>
     </security>
   </trustInfo>
