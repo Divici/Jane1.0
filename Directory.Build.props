@@ -10,7 +10,6 @@
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
     <AnalysisLevel>latest</AnalysisLevel>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
-    <InvariantGlobalization>true</InvariantGlobalization>
     <RuntimeIdentifier Condition="'$(IsPublishable)' == 'true'">win-x64</RuntimeIdentifier>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <NoWarn>$(NoWarn);CA1848;CA2007;CA1031</NoWarn>
@@ -25,6 +24,8 @@
     <WhisperNetVersion>1.9.1</WhisperNetVersion>
     <MicrosoftDataSqliteVersion>10.0.11</MicrosoftDataSqliteVersion>
     <NAudioVersion>3.0.1</NAudioVersion>
+    <SystemSpeechVersion>10.0.11</SystemSpeechVersion>
+    <SharpZipLibVersion>1.4.2</SharpZipLibVersion>
     <HNotifyIconVersion>2.4.1</HNotifyIconVersion>
   </PropertyGroup>
 

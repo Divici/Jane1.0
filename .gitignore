@@ -31,3 +31,4 @@ STUDY_GUIDE.md
 .env.*
 *.pfx
 *.snk
+TestResults/

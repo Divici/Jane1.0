@@ -2,11 +2,17 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <!-- Windows TFM because `route` exercises the real GpuGovernor (NVML + window geometry)
-         and `doctor` enumerates real audio endpoints. -->
+    <!-- Windows TFM because `route` exercises the real GpuGovernor (NVML + window geometry),
+         `doctor` enumerates real audio endpoints, and the fixture builder drives Windows SAPI. -->
     <TargetFramework>net10.0-windows</TargetFramework>
     <RootNamespace>Jane.Bench</RootNamespace>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Windows' own text-to-speech, used only to synthesise the fixture corpus so `bench` can
+         run start to finish with stdin closed. Never on the dictation path. -->
+    <PackageReference Include="System.Speech" Version="$(SystemSpeechVersion)" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Jane.Core\Jane.Core.csproj" />
