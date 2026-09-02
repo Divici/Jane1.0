@@ -1,0 +1,357 @@
+using System.Diagnostics;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using Jane.Core.Abstractions;
+
+namespace Jane.Windows.Hotkeys;
+
+/// <summary>
+/// A <c>WH_KEYBOARD_LL</c> hook that reports hold-to-talk state for a bare modifier key.
+/// </summary>
+/// <remarks>
+/// <c>RegisterHotKey</c> cannot express Jane's default binding: it needs a modifier bit plus a
+/// real key, and it fires once on key-down rather than reporting a held state. A low-level hook
+/// can do both, at the price of two rules that are not negotiable.
+/// <list type="number">
+/// <item><b>The callback enqueues and returns.</b> No allocation, no I/O, no locks. Windows
+/// removes a hook whose callback exceeds <c>LowLevelHooksTimeout</c> and tells nobody, so a GC
+/// pause or a blocked lock inside the proc silently kills the hotkey.</item>
+/// <item><b>The key is never swallowed.</b> Right Ctrl reaches every other app exactly as
+/// before, or Jane would break push-to-talk in every voice chat on the machine. Esc is the sole
+/// exception, and only while there is a dictation to cancel.</item>
+/// </list>
+/// Three threads are involved: the caller's (which only starts and stops), a hook thread that
+/// owns the hook and pumps its message queue, and a pump thread that drains the ring and raises
+/// events. Keeping the pump off the hook thread is what stops a slow subscriber from becoming a
+/// hook-callback overrun.
+/// </remarks>
+public sealed partial class LowLevelKeyboardHook : IHotkeyListener, IKeyboardHookHandle
+{
+    private const int WhKeyboardLl = 13;
+    private const int HcAction = 0;
+    private const nint WmKeyDown = 0x0100;
+    private const nint WmSysKeyDown = 0x0104;
+    private const uint WmQuit = 0x0012;
+
+    // WM_USER + 1. Only ever posted to the hook thread, which owns the whole message queue.
+    private const uint WmReinstallHook = 0x0401;
+
+    // The hook proc is [UnmanagedCallersOnly] and so cannot capture anything. Jane installs
+    // exactly one hook, so a single static owner is honest rather than a limitation.
+    private static LowLevelKeyboardHook? s_active;
+
+    private readonly HotkeyOptions _options;
+    private readonly RawKeyEventQueue _queue;
+    private readonly HotkeyStateMachine _machine;
+    private readonly Action<Core.Abstractions.HotkeyEvent> _emit;
+    private readonly ManualResetEventSlim _hookReady = new(initialState: false);
+    private readonly Lock _gate = new();
+    private readonly long _callbackBudgetTicks;
+
+    private Thread? _hookThread;
+    private Thread? _pumpThread;
+    private RebindRequest? _pendingRebind;
+    private uint _hookThreadId;
+    private nint _hookHandle;
+    private long _longestCallbackTicks;
+    private int _dictationActive;
+    private int _pipelineActive;
+    private volatile bool _stopping;
+    private volatile bool _held;
+    private bool _disposed;
+
+    public LowLevelKeyboardHook(
+        HotkeyBinding? binding = null,
+        HotkeyMode mode = HotkeyMode.Hold,
+        HotkeyOptions? options = null)
+    {
+        Binding = binding ?? HotkeyBinding.Default;
+        Mode = mode;
+        _options = options ?? new HotkeyOptions();
+        _queue = new RawKeyEventQueue();
+        _machine = new HotkeyStateMachine(Binding, Mode, _options);
+        _emit = e => HotkeyEvent?.Invoke(this, e);
+        _callbackBudgetTicks = (long)(_options.LowLevelHooksTimeout.TotalSeconds * Stopwatch.Frequency);
+        Watchdog = new HookWatchdog(this, _options.WatchdogInterval);
+    }
+
+    public HotkeyBinding Binding { get; private set; }
+
+    public HotkeyMode Mode { get; private set; }
+
+    public bool IsHeld => _held;
+
+    /// <summary>
+    /// Re-installs the hook when Windows drops it. Owned here rather than by the caller so the
+    /// protection cannot be forgotten at composition time.
+    /// </summary>
+    public HookWatchdog Watchdog { get; }
+
+    /// <summary>Events dropped because the pump stalled. Non-zero is worth logging.</summary>
+    public int DroppedEventCount => _queue.DroppedCount;
+
+    public event EventHandler<Core.Abstractions.HotkeyEvent>? HotkeyEvent;
+
+    public void Start()
+    {
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_hookThread is not null)
+            {
+                return;
+            }
+
+            if (Interlocked.CompareExchange(ref s_active, this, null) is not null)
+            {
+                throw new InvalidOperationException(
+                    "A LowLevelKeyboardHook is already running in this process; only one may be installed.");
+            }
+
+            _stopping = false;
+            _hookThread = new Thread(HookThreadMain)
+            {
+                IsBackground = true,
+                Name = "Jane hotkey hook",
+            };
+            _hookThread.Start();
+            _hookReady.Wait();
+
+            _pumpThread = new Thread(PumpThreadMain)
+            {
+                IsBackground = true,
+                Name = "Jane hotkey pump",
+            };
+            _pumpThread.Start();
+
+            Watchdog.Start();
+        }
+    }
+
+    public void Rebind(HotkeyBinding binding, HotkeyMode mode)
+    {
+        Binding = binding;
+        Mode = mode;
+
+        if (_pumpThread is null)
+        {
+            _machine.Rebind(binding, mode);
+            return;
+        }
+
+        // The state machine belongs to the pump thread; hand the change over rather than
+        // mutating it from whichever thread the settings window happens to be on.
+        Interlocked.Exchange(ref _pendingRebind, new RebindRequest(binding, mode));
+    }
+
+    /// <summary>
+    /// Tells the hook that a dictation is still being processed after key-up, so Esc keeps being
+    /// consumed through Transcribing rather than reaching the app underneath.
+    /// </summary>
+    /// <remarks>Phase 5's orchestrator owns the wider notion of "busy"; this hook only knows
+    /// about the key itself.</remarks>
+    public void NotifyPipelineActive(bool active) =>
+        Volatile.Write(ref _pipelineActive, active ? 1 : 0);
+
+    /// <summary>
+    /// The whole body of the hook procedure, minus the Win32 plumbing around it.
+    /// </summary>
+    /// <returns>
+    /// True if the key must be swallowed. Only ever true for Esc during a dictation; everything
+    /// else -- the bound key included -- falls through to <c>CallNextHookEx</c>.
+    /// </returns>
+    /// <remarks>
+    /// Factored out so the "no allocation" and "does not swallow the key" rules can be asserted
+    /// directly, without installing a hook or pressing a key. Every operation below is a field
+    /// read, a struct copy or an ordered write.
+    /// </remarks>
+    public bool RecordHookEvent(int virtualKey, bool isKeyDown, long timestamp)
+    {
+        _queue.TryEnqueue(new RawKeyEvent(virtualKey, isKeyDown, timestamp));
+
+        return virtualKey == HotkeyBinding.VkEscape
+            && isKeyDown
+            && (Volatile.Read(ref _dictationActive) != 0 || Volatile.Read(ref _pipelineActive) != 0);
+    }
+
+    /// <summary>
+    /// False once Windows has dropped the hook, or once a callback was measured beyond
+    /// <see cref="HotkeyOptions.LowLevelHooksTimeout"/> -- which is the same thing, just noticed
+    /// from this side.
+    /// </summary>
+    public bool IsInstalled =>
+        Volatile.Read(ref _hookHandle) != 0
+        && Volatile.Read(ref _longestCallbackTicks) < _callbackBudgetTicks;
+
+    public bool Reinstall()
+    {
+        var threadId = Volatile.Read(ref _hookThreadId);
+        if (threadId == 0 || _stopping)
+        {
+            return false;
+        }
+
+        // SetWindowsHookEx associates the hook with the calling thread, so the re-install has to
+        // happen on the thread that owns it -- hence a posted message rather than a direct call.
+        return PostThreadMessageW(threadId, WmReinstallHook, 0, 0);
+    }
+
+    public void Dispose()
+    {
+        lock (_gate)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            _stopping = true;
+            Watchdog.Dispose();
+
+            var threadId = Volatile.Read(ref _hookThreadId);
+            if (threadId != 0)
+            {
+                PostThreadMessageW(threadId, WmQuit, 0, 0);
+            }
+
+            _hookThread?.Join(TimeSpan.FromSeconds(2));
+            _pumpThread?.Join(TimeSpan.FromSeconds(2));
+            _hookThread = null;
+            _pumpThread = null;
+
+            Interlocked.CompareExchange(ref s_active, null, this);
+            _hookReady.Dispose();
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall)])]
+    private static nint HookProc(int nCode, nint wParam, nint lParam)
+    {
+        var hook = s_active;
+        if (hook is null || nCode != HcAction)
+        {
+            return CallNextHookEx(nint.Zero, nCode, wParam, lParam);
+        }
+
+        var started = Stopwatch.GetTimestamp();
+
+        // KBDLLHOOKSTRUCT begins with a DWORD vkCode, so this is the whole of the marshalling.
+        // Letting the runtime marshal the struct would allocate, which is exactly what is banned.
+        var virtualKey = Marshal.ReadInt32(lParam);
+        var isKeyDown = wParam == WmKeyDown || wParam == WmSysKeyDown;
+
+        var swallow = hook.RecordHookEvent(virtualKey, isKeyDown, started);
+        hook.RecordCallbackDuration(Stopwatch.GetTimestamp() - started);
+
+        return swallow ? 1 : CallNextHookEx(nint.Zero, nCode, wParam, lParam);
+    }
+
+    private void RecordCallbackDuration(long ticks)
+    {
+        if (ticks > Volatile.Read(ref _longestCallbackTicks))
+        {
+            Volatile.Write(ref _longestCallbackTicks, ticks);
+        }
+    }
+
+    private void HookThreadMain()
+    {
+        Volatile.Write(ref _hookThreadId, GetCurrentThreadId());
+        InstallHook();
+        _hookReady.Set();
+
+        // Thread messages carry no window, so they are handled here rather than dispatched.
+        while (!_stopping && GetMessageW(out var message, nint.Zero, 0, 0) > 0)
+        {
+            if (message.Message == WmReinstallHook)
+            {
+                InstallHook();
+            }
+        }
+
+        RemoveHook();
+        Volatile.Write(ref _hookThreadId, 0);
+    }
+
+    private void PumpThreadMain()
+    {
+        while (!_stopping)
+        {
+            var rebind = Interlocked.Exchange(ref _pendingRebind, null);
+            if (rebind is not null)
+            {
+                _machine.Rebind(rebind.Binding, rebind.Mode);
+            }
+
+            while (_queue.TryDequeue(out var raw))
+            {
+                _machine.Handle(raw, _emit);
+            }
+
+            _machine.Tick(Stopwatch.GetTimestamp(), _emit);
+
+            _held = _machine.IsHeld;
+            Volatile.Write(ref _dictationActive, _machine.IsActive ? 1 : 0);
+
+            Thread.Sleep(_options.PumpInterval);
+        }
+    }
+
+    private unsafe void InstallHook()
+    {
+        RemoveHook();
+
+        var proc = (nint)(delegate* unmanaged[Stdcall]<int, nint, nint, nint>)&HookProc;
+        var handle = SetWindowsHookExW(WhKeyboardLl, proc, GetModuleHandleW(nint.Zero), 0);
+
+        Volatile.Write(ref _hookHandle, handle);
+        Volatile.Write(ref _longestCallbackTicks, 0);
+    }
+
+    private void RemoveHook()
+    {
+        var handle = Interlocked.Exchange(ref _hookHandle, nint.Zero);
+        if (handle != nint.Zero)
+        {
+            UnhookWindowsHookEx(handle);
+        }
+    }
+
+    private sealed record RebindRequest(HotkeyBinding Binding, HotkeyMode Mode);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeMessage
+    {
+        public nint Hwnd;
+        public uint Message;
+        public nint WParam;
+        public nint LParam;
+        public uint Time;
+        public int PointX;
+        public int PointY;
+    }
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    private static partial nint SetWindowsHookExW(int idHook, nint lpfn, nint hMod, uint dwThreadId);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool UnhookWindowsHookEx(nint hhk);
+
+    [LibraryImport("user32.dll")]
+    private static partial nint CallNextHookEx(nint hhk, int nCode, nint wParam, nint lParam);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    private static partial int GetMessageW(out NativeMessage lpMsg, nint hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool PostThreadMessageW(uint idThread, uint msg, nint wParam, nint lParam);
+
+    [LibraryImport("kernel32.dll")]
+    private static partial uint GetCurrentThreadId();
+
+    [LibraryImport("kernel32.dll")]
+    private static partial nint GetModuleHandleW(nint lpModuleName);
+}
