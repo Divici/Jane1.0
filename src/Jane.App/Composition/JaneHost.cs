@@ -2,8 +2,13 @@ using System.IO;
 using System.Windows.Threading;
 using Jane.Core.Abstractions;
 using Jane.Core.Pipeline;
+using Jane.Core.Formatting;
+using Jane.Core.History;
+using Jane.Core.Instructions;
 using Jane.Core.Platform;
 using Jane.Core.Settings;
+using Jane.Core.Storage;
+using Jane.Core.Vocabulary;
 using Jane.Llm;
 using Jane.Speech;
 using Jane.Windows.Audio;
@@ -32,6 +37,7 @@ public sealed class JaneHost : IAsyncDisposable
     private readonly LowLevelKeyboardHook _hotkeys;
     private readonly IOverlayPresenter _overlay;
     private readonly LlmStack? _llm;
+    private readonly JaneDatabase _database;
     private bool _paused;
     private bool _disposed;
 
@@ -44,9 +50,17 @@ public sealed class JaneHost : IAsyncDisposable
         LowLevelKeyboardHook hotkeys,
         DictationOrchestrator orchestrator,
         IOverlayPresenter overlay,
-        LlmStack? llm)
+        LlmStack? llm,
+        JaneDatabase database,
+        UserDictionary dictionary,
+        CustomInstructions instructions,
+        HistoryStore history)
     {
         _llm = llm;
+        _database = database;
+        Dictionary = dictionary;
+        Instructions = instructions;
+        History = history;
         _dispatcher = dispatcher;
         _settings = settings;
         _capture = capture;
@@ -58,6 +72,15 @@ public sealed class JaneHost : IAsyncDisposable
     }
 
     public DictationOrchestrator Orchestrator { get; }
+
+    /// <summary>The user's vocabulary. Feeds both sherpa-onnx biasing and the LLM prompt.</summary>
+    public UserDictionary Dictionary { get; }
+
+    /// <summary>Global and per-app style rules. An app with rules never takes the bypass.</summary>
+    public CustomInstructions Instructions { get; }
+
+    /// <summary>Everything ever dictated, in plaintext, until the user deletes it.</summary>
+    public HistoryStore History { get; }
 
     public JaneSettings Settings => _settings.Current;
 
@@ -100,12 +123,38 @@ public sealed class JaneHost : IAsyncDisposable
             ? LlmStack.Create(Path.Combine(RepoOrInstallRoot(), "tools", "ollama", "ollama.exe"), current)
             : null;
 
-        // Phase 7's formatter goes inside this decorator; the decorator is what applies the
-        // governor's decision, so "skip the LLM while gaming" is one place rather than a branch
-        // in every formatter.
-        ITranscriptFormatter formatter = llm is null
-            ? new PassthroughFormatter()
-            : new RoutedFormatter(new PassthroughFormatter(), () => llm.CurrentRoute);
+        // Settings, dictionary, instructions and history all live in one SQLite file, opened once
+        // here. The migration runner brings the Phase 1 settings.json across on first open.
+        var database = JaneDatabase.Open(paths);
+        var dictionary = new UserDictionary(database);
+        var instructions = new CustomInstructions(database);
+        var history = new HistoryStore(database);
+
+        // The formatter never learns what a GPU is. RoutedFormatter applies the governor's
+        // decision, so "skip the LLM while gaming" is one place rather than a branch in every
+        // formatter -- and the skipped dictations are still recorded, because Phase 12's
+        // false-bypass rate is unmeasurable without them.
+        ITranscriptFormatter formatter;
+        if (llm is null)
+        {
+            formatter = new PassthroughFormatter();
+        }
+        else
+        {
+            var skipped = new SkippedDictationLog(history, focus.GetForegroundWindow);
+            var inner = new TranscriptFormatter(
+                llm.CreateClient(),
+                new TranscriptFormatterOptions
+                {
+                    Model = current.Llm.GpuModel,
+                    NumCtx = current.Llm.NumCtx,
+                    KeepAlive = current.Llm.KeepAlive,
+                },
+                new StoredFormattingPolicySource(dictionary, instructions),
+                new HistoryFormattingLog(history, focus.GetForegroundWindow));
+
+            formatter = new RoutedFormatter(inner, () => llm.CurrentRoute, skipped.Record);
+        }
 
         var orchestrator = new DictationOrchestrator(
             capture,
@@ -124,7 +173,7 @@ public sealed class JaneHost : IAsyncDisposable
                 MaxDuration = TimeSpan.FromMilliseconds(current.Hotkey.MaxToggleDurationMs),
             });
 
-        return new JaneHost(dispatcher, settings, capture, recognizer, vad, hotkeys, orchestrator, overlay, llm);
+        return new JaneHost(dispatcher, settings, capture, recognizer, vad, hotkeys, orchestrator, overlay, llm, database, dictionary, instructions, history);
     }
 
     /// <summary>
@@ -255,6 +304,7 @@ public sealed class JaneHost : IAsyncDisposable
         }
 
         _vad.Dispose();
+        _database.Dispose();
         _settings.Dispose();
     }
 }

@@ -8,6 +8,13 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Phase 10's store. Microsoft.Data.Sqlite is deliberately the only data dependency:
+         it is cross-platform managed code over a bundled e_sqlite3 native, so Jane.Core stays
+         off the Windows TFM and DoctorTests keeps passing. -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="$(MicrosoftDataSqliteVersion)" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- A handful of test seams stay internal rather than widening the public surface: the
          orchestrator's pending-audio field, for instance, exists only so a test can prove the
          buffer is released on every terminal path. -->
