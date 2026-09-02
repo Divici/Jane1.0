@@ -16,6 +16,9 @@ namespace Jane.App.Tests;
 /// </remarks>
 public sealed class OverlayFocusTests
 {
+    /// <summary>How many times another application may steal foreground before the run is void.</summary>
+    private const int MaxExternalFocusChanges = 3;
+
     private const int GwlExStyle = -20;
     private const int WsExTransparent = 0x0000_0020;
     private const int WsExToolWindow = 0x0000_0080;
@@ -46,7 +49,7 @@ public sealed class OverlayFocusTests
 
         sta.Settle(150);
 
-        var baseline = GetForegroundWindow();
+        IntPtr baseline = GetForegroundWindow();
         Assert.SkipWhen(
             baseline == IntPtr.Zero,
             "No window holds foreground, so this session has no interactive desktop to steal focus from.");
@@ -57,22 +60,23 @@ public sealed class OverlayFocusTests
         Assert.NotEqual(IntPtr.Zero, overlayHandle);
         Assert.NotEqual(overlayHandle, baseline);
 
+        var rebaselines = 0;
         foreach (var state in Enum.GetValues<OverlayState>())
         {
             presenter.Show(Status(state));
             sta.Settle();
-            AssertForegroundUnmoved(baseline, overlayHandle, $"after showing {state}");
+            AssertForegroundUnmoved(ref baseline, overlayHandle, ref rebaselines, $"after showing {state}");
 
             presenter.Hide();
             sta.Settle();
-            AssertForegroundUnmoved(baseline, overlayHandle, $"after hiding from {state}");
+            AssertForegroundUnmoved(ref baseline, overlayHandle, ref rebaselines, $"after hiding from {state}");
         }
 
         // Re-showing after a hide walks the HWND through a second show; a window that only
         // behaves on its first appearance would pass everything above.
         presenter.Show(new OverlayStatus(OverlayState.Listening, "Listening", 0.9f));
         sta.Settle();
-        AssertForegroundUnmoved(baseline, overlayHandle, "after re-showing following a hide");
+        AssertForegroundUnmoved(ref baseline, overlayHandle, ref rebaselines, "after re-showing following a hide");
 
         sta.Invoke(holder.Close);
     }
@@ -219,14 +223,41 @@ public sealed class OverlayFocusTests
         _ => OverlayStatus.Idle,
     };
 
-    private static void AssertForegroundUnmoved(IntPtr baseline, IntPtr overlay, string when)
+    /// <summary>
+    /// Asserts the overlay did not take foreground, and that the window the user was in still has
+    /// it.
+    /// </summary>
+    /// <remarks>
+    /// The two clauses are not equally strong, on purpose. "The overlay is not the foreground
+    /// window" is the product invariant and is asserted unconditionally -- if that ever fails, the
+    /// user's dictation goes into the pill instead of their document.
+    /// <para>
+    /// "Foreground did not move at all" is a stronger claim than Jane can make, because anything
+    /// on the machine may legitimately take foreground mid-test: a toast, a Teams call, or another
+    /// test project in the same solution run driving its own window. So a move to some *third*
+    /// window re-establishes the baseline and carries on, up to a small budget. A move to the
+    /// overlay always fails, and a session where foreground churns constantly fails too rather
+    /// than passing vacuously.
+    /// </para>
+    /// </remarks>
+    private static void AssertForegroundUnmoved(ref IntPtr baseline, IntPtr overlay, ref int rebaselines, string when)
     {
         var current = GetForegroundWindow();
 
         Assert.False(current == overlay, $"The overlay took foreground {when}.");
+
+        if (current == baseline)
+        {
+            return;
+        }
+
+        rebaselines++;
         Assert.True(
-            current == baseline,
-            $"Foreground moved from 0x{baseline:X} to 0x{current:X} {when}.");
+            rebaselines <= MaxExternalFocusChanges,
+            $"Foreground moved away from 0x{baseline:X} {rebaselines} times during the walk (last: to " +
+            $"0x{current:X} {when}). Never to the overlay, but too unstable for this test to mean anything.");
+
+        baseline = current;
     }
 
     [DllImport("user32.dll")]

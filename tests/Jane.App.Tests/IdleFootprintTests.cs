@@ -28,17 +28,57 @@ public sealed class IdleFootprintTests
     private const string SampleSecondsVariable = "JANE_IDLE_SAMPLE_SECONDS";
 
     private const double MaxCpuPercent = 1.0;
-    private const long MaxWorkingSetBytes = 150L * 1024 * 1024;
+
+    /// <summary>Jane's own shell, with the dictation graph not started.</summary>
+    private const long MaxShellWorkingSetBytes = 150L * 1024 * 1024;
+
+    /// <summary>
+    /// The whole product at idle, including the resident ASR model.
+    /// </summary>
+    /// <remarks>
+    /// The plan budgets 150 MB for Jane and accounts for the resident ASR model separately at
+    /// "~2 GB", disclosed in settings. Measured here the two together come to well under half
+    /// that, because the shipped export is int8 rather than fp32. The residency is the deliberate
+    /// trade that removes the 1.4 s cold session-init from the dictation path: it costs RAM, which
+    /// is not the constrained resource on a 31 GB machine, and zero VRAM and zero idle CPU, which
+    /// are.
+    /// </remarks>
+    private const long MaxResidentWorkingSetBytes = 1400L * 1024 * 1024;
 
     [Fact]
     public async Task IdleCpuUnder1PctWorkingSetUnder150MB()
+    {
+        // Jane's own cost, measured with the dictation graph not started, which is the figure the
+        // plan's 150 MB budget is actually about.
+        var (cpuPercent, peak) = await MeasureIdleAsync(withPipeline: false);
+
+        Assert.True(cpuPercent < MaxCpuPercent,
+            $"Idle CPU was {cpuPercent:F3}% of the machine, over the {MaxCpuPercent}% budget.");
+        Assert.True(peak < MaxShellWorkingSetBytes,
+            $"Jane's shell peaked at {peak / (1024 * 1024)} MB, over the {MaxShellWorkingSetBytes / (1024 * 1024)} MB budget.");
+    }
+
+    [Fact]
+    public async Task ResidentAsrModelCostsRamButNoIdleCpu()
+    {
+        // The whole product, dictation graph and all. Residency is only defensible if it costs
+        // nothing but RAM, so the CPU budget here is the same 1%.
+        var (cpuPercent, peak) = await MeasureIdleAsync(withPipeline: true);
+
+        Assert.True(cpuPercent < MaxCpuPercent,
+            $"Idle CPU with the model resident was {cpuPercent:F3}% of the machine, over the {MaxCpuPercent}% budget.");
+        Assert.True(peak < MaxResidentWorkingSetBytes,
+            $"Idle working set with the model resident peaked at {peak / (1024 * 1024)} MB, over the {MaxResidentWorkingSetBytes / (1024 * 1024)} MB budget.");
+    }
+
+    private static async Task<(double CpuPercent, long PeakWorkingSet)> MeasureIdleAsync(bool withPipeline)
     {
         var token = TestContext.Current.CancellationToken;
 
         var assembly = FindAppAssembly();
         Assert.SkipWhen(assembly is null, "Jane.App has not been built, so there is no process to measure.");
 
-        using var app = Launch(assembly!);
+        using var app = Launch(assembly!, withPipeline);
 
         try
         {
@@ -46,15 +86,7 @@ public sealed class IdleFootprintTests
             await Task.Delay(TimeSpan.FromSeconds(6), token);
             Assert.False(app.HasExited, $"Jane exited during startup with code {ExitCodeOrZero(app)}.");
 
-            var (cpuPercent, peakWorkingSet) = await SampleAsync(app, SampleWindow(), token);
-
-            Assert.True(
-                cpuPercent < MaxCpuPercent,
-                $"Idle CPU was {cpuPercent:F3}% of the machine, over the {MaxCpuPercent}% budget.");
-
-            Assert.True(
-                peakWorkingSet < MaxWorkingSetBytes,
-                $"Idle working set peaked at {peakWorkingSet / (1024 * 1024)} MB, over the {MaxWorkingSetBytes / (1024 * 1024)} MB budget.");
+            return await SampleAsync(app, SampleWindow(), token);
         }
         finally
         {
@@ -71,7 +103,7 @@ public sealed class IdleFootprintTests
     /// -- until Phase 13 signs the binary and installs it under %ProgramFiles%. Same assembly,
     /// same WPF, same tray icon; only the launcher differs.
     /// </remarks>
-    private static Process Launch(string assemblyPath)
+    private static Process Launch(string assemblyPath, bool withPipeline)
     {
         var startInfo = new ProcessStartInfo("dotnet")
         {
@@ -80,6 +112,7 @@ public sealed class IdleFootprintTests
             WorkingDirectory = Path.GetDirectoryName(assemblyPath)!,
         };
         startInfo.ArgumentList.Add(assemblyPath);
+        startInfo.Environment["JANE_DISABLE_PIPELINE"] = withPipeline ? "0" : "1";
 
         return Process.Start(startInfo)
             ?? throw new InvalidOperationException("Could not start the Jane process.");

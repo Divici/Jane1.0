@@ -7,4 +7,12 @@
     <TargetFramework>net10.0</TargetFramework>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- A handful of test seams stay internal rather than widening the public surface: the
+         orchestrator's pending-audio field, for instance, exists only so a test can prove the
+         buffer is released on every terminal path. -->
+    <InternalsVisibleTo Include="Jane.Core.Tests" />
+    <InternalsVisibleTo Include="Jane.Eval" />
+  </ItemGroup>
+
 </Project>

@@ -746,3 +746,67 @@ rediscovered: **an XML comment may not contain a double hyphen** (this codebase 
 em-dash everywhere else), and **the side-by-side parser rejects comments inside `<trustInfo>`**.
 Either produces `Invalid Xml syntax` at load, and the process fails to start with a
 side-by-side error that names no cause.
+
+### P5-1 — Phase 5's acceptance is automated against a real Win32 window, not Notepad (2026-09-02)
+
+**Deviation, forced by Windows 11.** The plan states the acceptance as *"hold Right Ctrl, speak,
+release, and raw text appears in Notepad"*. Notepad on this build is the Store app: the process
+started by `notepad.exe` hands off and reports `MainWindowHandle == 0`, and its text area is a
+WinUI surface with no classic child control, so `WM_GETTEXT` returns nothing. Jane dictates into it
+perfectly well — what is impossible is *verifying* the result programmatically.
+
+`tests/Jane.Eval/EndToEndDictationTests.cs` runs the acceptance against a real top-level Win32
+window with a real `EDIT` control, on its own thread with its own message pump. Everything else is
+the shipped code: the real `ParakeetRecognizer` over the real model, the real `SileroVadGate`, the
+real Win32 `SendInputInjector` with the real `ModifierGate`, real foreground and focus, and real
+`WM_CHAR` delivery from `SendInput`'s `VK_PACKET` path. Only two things are substituted — the
+microphone, replaced by a fixture WAV (Phase 2 verified the capture path against the real device
+separately), and the owner of the target window.
+
+**It passes.** Fed `prose-01.wav`, the pipeline typed
+*"I'll take a look at the poll request this afternoon and leave some comments on the parts I'm
+unsure about."* — correctly capitalised, correct apostrophes, correctly punctuated, from raw
+Parakeet with no LLM anywhere in the path. That is the evidence for the locked claim that the
+in-game route can skip the LLM entirely and still produce presentable text.
+
+The one error, "poll" for "pull", is exactly the class of miss Phase 10's dictionary and the now-
+enabled hotword biasing exist to fix. The test therefore gates on **word error rate against the
+fixture's reference (< 25 %)** rather than on an exact substring: at 6.6 % WER the engine does make
+real errors, and an exact-match assertion would have been a lottery on one word rather than a
+measurement.
+
+Two Win32 details cost real time and are recorded in the harness: `SetFocus` is a no-op from a
+thread that does not own the window (focus is posted to the pump thread instead), and
+`SetForegroundWindow` on an already-foreground window raises no `WM_SETFOCUS`, so relying on that
+alone leaves the caret nowhere and `SendInput` silently delivers to no control at all.
+
+### P5-2 — Idle footprint is measured as two figures, not one (2026-09-02)
+
+Wiring the real recogniser into the app took the idle working set from 94 MB to **792 MB**, and the
+single 150 MB assertion failed. The plan already anticipated this: *"Idle CPU under 1% and idle
+working set under 150 MB with no LLM loaded (the resident ASR model's ~2 GB is accounted separately
+and disclosed in settings)."* One assertion could not express two budgets.
+
+`IdleFootprintTests` now measures both, using a new `JANE_DISABLE_PIPELINE=1` diagnostic seam that
+brings up the shell without the dictation graph:
+
+- **Jane's own shell** — under 150 MB, measured **94 MB**, CPU **0.00 %** over 60 s.
+- **The whole product with the model resident** — under 1400 MB, measured **792 MB**, CPU under 1 %.
+
+The 792 MB is materially better than the plan's ~2 GB estimate, because the shipped export is int8
+rather than fp32. Residency costs RAM, which is not the constrained resource on a 31 GB machine,
+and zero VRAM and zero idle CPU, which are.
+
+### P5-3 — The overlay focus test now asserts the invariant, not the environment (2026-09-02)
+
+`ForegroundWindowNeverMovesAcrossEveryStateTransition` asserted that the foreground window never
+changed *at all*. That is a stronger claim than Jane can make: anything on the machine may take
+foreground mid-test — a toast, a call, or another test project in the same solution run driving its
+own window, which is exactly what started happening once Phase 5's end-to-end test began creating
+one.
+
+The two clauses are now weighted correctly. **"The overlay is not the foreground window" is the
+product invariant and is asserted unconditionally** — if that fails, the user's dictation goes into
+the pill instead of their document. A move to some *third* window re-establishes the baseline and
+continues, up to three times; past that the run is declared too unstable to mean anything and
+fails rather than passing vacuously.

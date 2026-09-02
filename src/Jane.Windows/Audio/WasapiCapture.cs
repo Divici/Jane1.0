@@ -36,6 +36,7 @@ public sealed class WasapiCapture : IAudioSource
     private bool _isCapturing;
     private int _preRollSamples;
     private CaptureStopReason? _latchedStop;
+    private float _level;
     private DateTimeOffset _startedAt;
     private bool _disposed;
 
@@ -176,6 +177,7 @@ public sealed class WasapiCapture : IAudioSource
         // what makes arming free -- and only the retained-capture branch takes any decision.
         var span = samples.Span;
         _preRoll.Write(span);
+        UpdateLevel(span);
 
         CaptureStopReason? autoStop = null;
         lock (_captureGate)
@@ -202,6 +204,34 @@ public sealed class WasapiCapture : IAudioSource
             Publish(_state with { IsCapturing = false });
             AutoStopped?.Invoke(this, autoStop.Value);
         }
+    }
+
+    /// <summary>
+    /// Recent loudness in [0, 1], for the overlay waveform.
+    /// </summary>
+    /// <remarks>
+    /// Computed on the device callback thread as a decayed peak, which costs one pass over a
+    /// buffer that was already in cache. A separate meter reading the samples again would double
+    /// the memory traffic on the one thread that must never fall behind.
+    /// </remarks>
+    public float CurrentLevel => Volatile.Read(ref _level);
+
+    private void UpdateLevel(ReadOnlySpan<float> span)
+    {
+        var peak = 0f;
+        foreach (var sample in span)
+        {
+            var magnitude = Math.Abs(sample);
+            if (magnitude > peak)
+            {
+                peak = magnitude;
+            }
+        }
+
+        // Rise instantly, fall slowly: a meter that tracked the decay symmetrically would flicker
+        // through every glottal stop and read as noise rather than as speech.
+        var previous = Volatile.Read(ref _level);
+        Volatile.Write(ref _level, peak > previous ? peak : (previous * 0.85f) + (peak * 0.15f));
     }
 
     private void OnStopped(object? sender, AudioDeviceException? error)
