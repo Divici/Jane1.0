@@ -136,8 +136,8 @@ from `bench`, which measures 1 s and 10 s explicitly.
 | LLM — warm, non-thinking model | **~165 ms** | **0 ms — skipped** | **~795 ms** |
 | LLM cold load after the 180 s release | **+1–3 s** (19.6 s once, first-ever load from cold disk) | 0 ms | +1–3 s |
 | Injection (incl. modifier-release wait) | 10–30 ms | 10–30 ms | 10–30 ms |
-| **Total, warm, 8.3 s corpus utterance** | **625 ms p50 / 948 ms p95** | **458 ms p50 / 714 ms p95** | **1 254 ms p50 / 1 593 ms p95** |
-| **Total, first dictation after launch** | **3 925 ms** | **2 034 ms** | **6 011 ms** |
+| **Total, warm, 8.3 s corpus utterance** | **598 ms p50 / 894 ms p95** | **362 ms p50 / 641 ms p95** | **1 251 ms p50 / 1 591 ms p95** |
+| **Total, first dictation after launch** | **3 704 ms** | **1 691 ms** | **5 713 ms** |
 | **Total, warm, 1 s utterance (from `bench`)** | ~245 ms | **~80 ms** | ~875 ms |
 
 **Accuracy, same run:** WER 6.6 % raw / 8.9 % after formatting, punctuation accuracy 97 % raw,
@@ -989,3 +989,45 @@ budget cannot distinguish "recognition got slower" from "the fixtures got longer
 
 All six gates now pass. `tests/fixtures/eval-baseline.json` is committed, and `eval` exits non-zero
 on a latency drift past 25 % or a WER rise past 3 points.
+
+## Final acceptance — every phase, re-run end to end (2026-09-02)
+
+| Phase | Acceptance as written | Result |
+|---|---|---|
+| 0 | `dotnet build`, `dotnet test`, `doctor` writes a verdict for every probe | **PASS** — build clean, 600 tests, doctor 10/10 pass |
+| 1 | `bench` writes cold-init, first-inference and warm p50/p95 per engine/quant/length/decoder; `settings.json` records the selection | **PASS** — 12 rows, all 3 gates pass, Parakeet @ 4 threads selected, biasing enabled |
+| 2 | synthetic device stream, 2 s simulated hold → trimmed buffer; 0.2 s hold → nothing | **PASS** — 196 Jane.Windows tests |
+| 3 | `dotnet test --filter Category=Injection` passes, including the held-modifier case | **PASS** — 99 tests via `-- --filter-trait "Category=Injection"` |
+| 4 | drive the overlay through every state, foreground never moves | **PASS** — 96 Jane.App tests, 0 skipped; idle 0.00 % CPU |
+| 5 | hold, speak, release, raw text appears | **PASS** — automated against a real Win32 edit control with the real ASR, VAD and injector |
+| 6 | borderless window → `route` reports LLM-off; no Jane VRAM after idle; killing Jane leaves no `ollama.exe` | **PASS** — all three verified live (see below) |
+| 7 | `eval --formatting` passes the fixture set with no regression | **PASS** — folded into the full `eval` |
+| 8 | lower WER on context terms, in Chrome and VS Code | **PASS** — real Chrome/VS Code/Terminal reads; term recall 100 % on the GPU route |
+| 9 | select a sentence, "make it shorter", only that sentence changes; "undo that" restores byte-for-byte | **PASS** — 20 EditMode tests + 8 SelectionProbe tests |
+| 10 | add a term to the dictionary, re-run `eval`, its error rate drops | **PASS** — term recall 84 % → **100 %** with the dictionary wired |
+| 11 | delete `%LOCALAPPDATA%\Jane`, launch, complete onboarding, dictate | **PARTIAL** — onboarding is automated with a stubbed downloader; the real first-run walkthrough needs a person |
+| 12 | `eval` prints the table and exits non-zero on regression | **PASS** — 6/6 gates, baseline committed, no regression |
+| 13 | install, reboot, dictate into an elevated window | **PARTIAL** — publish and signing verified; the trust-store install and reboot are left to the user (P13-2) |
+
+**Phase 6, verified live rather than by test:** a real `WS_POPUP` window covering the 2560×1440
+monitor made `route` report `LLM-OFF` with only the geometry signal firing — the borderless case
+`SHQueryUserNotificationState` alone would have missed. Loading a model took VRAM from 2 204 to
+6 077 MiB; after the idle unload it returned to 2 453 with `/api/ps` empty. Hard-killing Jane with
+`Stop-Process -Force` left **no** `ollama.exe` behind.
+
+**The whole app, running:** 822 MB working set with the ASR model resident, its own supervised
+`ollama.exe`, zero VRAM held at idle, a 48 KB SQLite database, 40 threads, and no orphan after a
+hard kill.
+
+**Final numbers, `eval` on the committed baseline:**
+
+| route | WER | punctuation | casing | term recall | p50 | p95 | cold | false bypass |
+|---|---|---|---|---|---|---|---|---|
+| LLM-off (in-game) | 6.6 % | 97 % | 100 % | 84 % | 362 ms | 641 ms | 1 691 ms | 0 % |
+| GPU | 9.6 % | 74 % | 98 % | **100 %** | 598 ms | 894 ms | 3 704 ms | 0 % |
+| CPU (opt-in) | 12.8 % | 76 % | 98 % | 84 % | 1 251 ms | 1 591 ms | 5 713 ms | 0 % |
+
+The GPU route's higher WER against the *raw* reference is expected and is not a regression: it is
+scored against `expectedFormatted`, and the formatter deliberately changes filler-heavy and
+self-correcting fixtures. Its term recall — the metric the dictionary exists to move — is the one
+that reaches 100 %.
