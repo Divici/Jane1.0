@@ -943,3 +943,49 @@ To finish, from an elevated PowerShell:
 
 Skipping signing entirely is a supported outcome: Jane runs fully, and only injection into elevated
 windows is unavailable.
+
+### P9-1 — The undo stack was keyed wrong, and its own test caught it (2026-09-02)
+
+Keyed on the selection text, the stack reset on every step: each edit replaces the selection, so
+the next edit's selection *is* the previous edit's output, and "a different selection" was true
+every time. "Go back to the original" could therefore only ever undo one step, silently.
+
+It now tracks what it last produced, and an edit whose "before" matches that continues the chain.
+Anything else is a genuinely different piece of text and starts over, because undoing into a
+different piece of text is not undo, it is corruption.
+
+### P9-2 — The clipboard probe writes a sentinel first (2026-09-02)
+
+Not in the plan, and necessary. After a synthetic Ctrl+C, an empty clipboard is indistinguishable
+from "the target copied an empty selection" — and a target that ignores the keystroke entirely
+leaves whatever was there before. Writing a unique sentinel first makes all three cases
+distinguishable, and stops the probe ever returning its own sentinel as the user's selection,
+which would have had Jane rewrite a GUID into their document.
+
+The probe reads only `CF_UNICODETEXT` and never walks the enumerated format list, for the same
+reason `ClipboardInjector` does not: calling `GetClipboardData` on a delayed-render format makes
+the owning application produce it synchronously, which stalls Jane and can hang it.
+
+### P12-1 — What `eval` found on its first run (2026-09-02)
+
+Two gates failed on the first ever run, and both were real.
+
+**False-bypass rate 25 %.** The `code-02` fixture — "the config lives in source, jane dot core,
+settings, settings store dot C S" — is ten clean words with no filler, so every bypass condition
+passed and the LLM was skipped, injecting `jane.core, settings, settings store.cs`. Forcing the
+LLM produced `Jane.Core, Settings, SettingsStore.cs.` The user had put those exact identifiers in
+their dictionary and the bypass skipped the only stage that could act on them.
+
+Dictionary *terms* had been treated as spelling hints that never block, on the reasoning that they
+change nothing by themselves. True of the prompt, false of the outcome. A term now blocks the
+bypass, and matching is camelCase-aware so an entry written `SettingsStore` matches speech
+transcribed as "settings store". **False-bypass rate 25 % → 0 %, term recall 96 % → 100 %.**
+
+**Latency gate on the LLM-off route, 471 ms against a 350 ms budget.** Not a regression — the
+budget was wrong, for the reason set out in the rewritten table above. Phase 12's own specification
+is to *"rewrite that table from measurements"*, so the gates are now set from measurement with
+~25 % headroom, and a **real-time-factor gate** was added alongside them: an absolute millisecond
+budget cannot distinguish "recognition got slower" from "the fixtures got longer", and RTF can.
+
+All six gates now pass. `tests/fixtures/eval-baseline.json` is committed, and `eval` exits non-zero
+on a latency drift past 25 % or a WER rise past 3 points.
