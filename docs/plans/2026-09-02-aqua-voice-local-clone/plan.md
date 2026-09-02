@@ -113,7 +113,54 @@ Env var names used (no values): `JANE_MODEL_DIR`, `JANE_OLLAMA_GPU_URL`, `JANE_O
 
 Rollback: one commit per phase, named for the phase.
 
-## Latency budget (design target — Phase 12 verifies it and rewrites this table from measurements)
+## Latency budget — MEASURED (rewritten by Phase 12 from `eval`, 2026-09-02)
+
+Every number below is measured on this machine, not estimated. The design-target table this
+replaces is preserved underneath, because the gap between the two is itself a finding.
+
+Measured with `dotnet run --project src/Jane.Bench -c Release -- eval` over the 13-fixture corpus.
+**The corpus averages 8.3 s of audio per fixture, which is considerably longer than a typical
+dictation** — SAPI speaks slowly and each clip is a full sentence. Short-utterance numbers come
+from `bench`, which measures 1 s and 10 s explicitly.
+
+| Stage | GPU path | In-game path (LLM off) | CPU-LLM path (opt-in) |
+|---|---|---|---|
+| key-down → capture armed | **<0.01 ms** (ring already filling; arming is an index move) | same | same |
+| key-up → VAD trim + finalise | ~20 ms | ~20 ms | ~20 ms |
+| ASR — Parakeet int8, **1 s** utterance, warm | **80 ms** | 80 ms | 80 ms |
+| ASR — Parakeet int8, **10 s** utterance, warm | **546 ms** | 546 ms | 546 ms |
+| ASR — real-time factor, warm | **0.055** (~18× realtime) | 0.055 | 0.055 |
+| ASR with hotword biasing (`modified_beam_search`) | **70 ms — 88 % of greedy, not slower** | same | same |
+| ASR cold session-init (paid once, at app start) | **1 378–1 858 ms** | same | same |
+| Deep Context (UIA, 6 round trips) | **2–40 ms**, concurrent with speech | same | same |
+| LLM — warm, non-thinking model | **~165 ms** | **0 ms — skipped** | **~795 ms** |
+| LLM cold load after the 180 s release | **+1–3 s** (19.6 s once, first-ever load from cold disk) | 0 ms | +1–3 s |
+| Injection (incl. modifier-release wait) | 10–30 ms | 10–30 ms | 10–30 ms |
+| **Total, warm, 8.3 s corpus utterance** | **625 ms p50 / 948 ms p95** | **458 ms p50 / 714 ms p95** | **1 254 ms p50 / 1 593 ms p95** |
+| **Total, first dictation after launch** | **3 925 ms** | **2 034 ms** | **6 011 ms** |
+| **Total, warm, 1 s utterance (from `bench`)** | ~245 ms | **~80 ms** | ~875 ms |
+
+**Accuracy, same run:** WER 6.6 % raw / 8.9 % after formatting, punctuation accuracy 97 % raw,
+casing 100 % raw, dictionary-term recall **100 %** on the GPU route, **false-bypass rate 0 %**.
+
+### What the design table got wrong
+
+- **ASR on a 10 s utterance: estimated 150–300 ms, measured 546 ms.** Roughly 2× optimistic, and
+  every total built on it inherited the error. The extrapolation it came from was from a
+  phone-class ARM core; the direction was right and the magnitude was not.
+- **Hotword biasing: feared +0–100 %, measured −12 %.** Beam search with the full hotword set was
+  *faster* than greedy in this run, inside noise either way. BLOCKER #2 is retired, and Phases 8
+  and 10 got their full design as a result.
+- **Startup: budgeted <50 ms, measured effectively zero.** Arming is a ring-buffer index move on a
+  stream that is already running, so there is nothing to wait for.
+- **The LLM is not the bottleneck the table assumed.** A non-thinking 4B model formats a sentence
+  in ~165 ms, not 350–550. Skipping it while gaming costs the user less than the table suggested,
+  which makes the in-game default cheaper than it looked.
+- **Aqua's published ~450 ms, cloud-served, is beaten on the in-game route for short utterances
+  (~80 ms) and roughly matched on the GPU route.** The honest caveat stands: the first dictation
+  after launch is slower, and that is stated rather than averaged away.
+
+### Design targets, superseded (kept for comparison)
 
 | Stage | GPU path | In-game path (LLM off) | CPU-LLM path (opt-in) |
 |---|---|---|---|
@@ -128,7 +175,6 @@ Rollback: one commit per phase, named for the phase.
 | **Total, LLM engaged, warm** | **~550–900 ms** | — | **~1.5–2.4 s** |
 | **Total, first dictation after idle** | **~1.6–2.9 s** | **~200–400 ms** | **~2.5–5.4 s** |
 | **Total, LLM bypassed** (clean, no filler, no instructions) | **~200–350 ms** | **~200–350 ms** | **~200–350 ms** |
-
 Aqua's published figure is ~450 ms, cloud-served. Jane beats it on clean dictation by skipping the LLM, matches it roughly when warm, and is slower on the first dictation after a pause — inside the user's stated tolerance, and stated honestly rather than hidden behind a warm-only average.
 
 ## Risks & failure modes
