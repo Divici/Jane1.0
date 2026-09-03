@@ -38,7 +38,6 @@ public sealed class WindowLauncher(JaneHost host)
             host.Provisioner,
             host.Microphones,
             host.Blocklist,
-            visible => host.SetOverlayVisible(visible),
             host.Database);
 
         _settings.Closed += (_, _) => _settings = null;

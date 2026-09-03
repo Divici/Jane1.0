@@ -146,6 +146,10 @@ public sealed class EndToEndDictationTests
     /// <summary>Replays a fixture WAV in place of the microphone.</summary>
     private sealed class FixtureAudioSource(float[] samples) : IAudioSource
     {
+        public void Reconfigure(MicrophoneRouting routing)
+        {
+        }
+
         public AudioSourceState State { get; private set; } = new(false, false, "Fixture", null);
 
         public event EventHandler<AudioSourceState>? StateChanged;

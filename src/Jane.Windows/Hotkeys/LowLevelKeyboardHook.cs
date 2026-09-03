@@ -40,7 +40,6 @@ public sealed partial class LowLevelKeyboardHook : IHotkeyListener, IKeyboardHoo
     // exactly one hook, so a single static owner is honest rather than a limitation.
     private static LowLevelKeyboardHook? s_active;
 
-    private readonly HotkeyOptions _options;
     private readonly RawKeyEventQueue _queue;
     private readonly HotkeyStateMachine _machine;
     private readonly Action<Core.Abstractions.HotkeyEvent> _emit;
@@ -48,9 +47,11 @@ public sealed partial class LowLevelKeyboardHook : IHotkeyListener, IKeyboardHoo
     private readonly Lock _gate = new();
     private readonly long _callbackBudgetTicks;
 
+    private HotkeyOptions _options;
     private Thread? _hookThread;
     private Thread? _pumpThread;
     private RebindRequest? _pendingRebind;
+    private HotkeyOptions? _pendingOptions;
     private uint _hookThreadId;
     private nint _hookHandle;
     private long _longestCallbackTicks;
@@ -128,8 +129,13 @@ public sealed partial class LowLevelKeyboardHook : IHotkeyListener, IKeyboardHoo
         }
     }
 
+    /// <summary>The thresholds and cadences in force, after any <see cref="Reconfigure"/>.</summary>
+    public HotkeyOptions Options => Volatile.Read(ref _options);
+
     public void Rebind(HotkeyBinding binding, HotkeyMode mode)
     {
+        ArgumentNullException.ThrowIfNull(binding);
+
         Binding = binding;
         Mode = mode;
 
@@ -142,6 +148,28 @@ public sealed partial class LowLevelKeyboardHook : IHotkeyListener, IKeyboardHoo
         // The state machine belongs to the pump thread; hand the change over rather than
         // mutating it from whichever thread the settings window happens to be on.
         Interlocked.Exchange(ref _pendingRebind, new RebindRequest(binding, mode));
+    }
+
+    /// <summary>
+    /// Changes the hold thresholds without disturbing the installed hook.
+    /// </summary>
+    /// <remarks>
+    /// The pump interval and the watchdog cadence are deliberately not settable: they are
+    /// internal tuning rather than anything a user has an opinion about, and changing the pump
+    /// interval underneath a running pump thread would need a second hand-off for no benefit.
+    /// </remarks>
+    public void Reconfigure(TimeSpan minimumHold, TimeSpan maxDuration)
+    {
+        var updated = Options with { MinimumHold = minimumHold, MaxDuration = maxDuration };
+        Volatile.Write(ref _options, updated);
+
+        if (_pumpThread is null)
+        {
+            _machine.Reconfigure(updated);
+            return;
+        }
+
+        Interlocked.Exchange(ref _pendingOptions, updated);
     }
 
     /// <summary>
@@ -282,6 +310,12 @@ public sealed partial class LowLevelKeyboardHook : IHotkeyListener, IKeyboardHoo
             if (rebind is not null)
             {
                 _machine.Rebind(rebind.Binding, rebind.Mode);
+            }
+
+            var options = Interlocked.Exchange(ref _pendingOptions, null);
+            if (options is not null)
+            {
+                _machine.Reconfigure(options);
             }
 
             while (_queue.TryDequeue(out var raw))

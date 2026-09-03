@@ -86,12 +86,19 @@ public interface ICaptureDeviceFactory
 /// Whether to retry at all. Off in tests that assert the failure state itself.
 /// </param>
 /// <param name="DeviceId">Explicit endpoint, or null for the default communications device.</param>
+/// <param name="Activation">Whether the device is held open or opened per dictation.</param>
+/// <param name="IdleRelease">
+/// How long an on-demand device stays open after a dictation ends. Zero releases it immediately,
+/// which makes every dictation a cold open.
+/// </param>
 public sealed record AudioCaptureOptions(
     TimeSpan PreRoll,
     TimeSpan MaxCaptureDuration,
     TimeSpan ReconnectInterval,
     bool AutoReconnect,
-    string? DeviceId)
+    string? DeviceId,
+    MicrophoneActivation Activation = MicrophoneActivation.WhileDictating,
+    TimeSpan IdleRelease = default)
 {
     public AudioCaptureOptions()
         : this(
@@ -99,7 +106,22 @@ public sealed record AudioCaptureOptions(
             TimeSpan.FromMinutes(5),
             TimeSpan.FromSeconds(2),
             AutoReconnect: true,
-            DeviceId: null)
+            DeviceId: null,
+            Activation: MicrophoneActivation.WhileDictating,
+            IdleRelease: TimeSpan.FromSeconds(8))
     {
+    }
+
+    /// <summary>These options with a routing applied, leaving everything else alone.</summary>
+    public AudioCaptureOptions With(MicrophoneRouting routing)
+    {
+        ArgumentNullException.ThrowIfNull(routing);
+
+        return this with
+        {
+            DeviceId = routing.DeviceId,
+            Activation = routing.Activation,
+            IdleRelease = routing.IdleRelease,
+        };
     }
 }

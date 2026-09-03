@@ -110,6 +110,11 @@ internal sealed class Harness
 
     internal sealed class FakeAudioSource : IAudioSource
     {
+        /// <summary>The last routing applied. Nothing here opens a device, so it is only recorded.</summary>
+        public MicrophoneRouting? Routing { get; private set; }
+
+        public void Reconfigure(MicrophoneRouting routing) => Routing = routing;
+
         public AudioSourceState State { get; private set; } = new(false, false, "Fake mic", null);
 
         public event EventHandler<AudioSourceState>? StateChanged;

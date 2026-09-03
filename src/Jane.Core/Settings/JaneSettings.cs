@@ -35,12 +35,37 @@ public sealed record SpeechSettings(
 /// cost nothing at all -- no overlay, no models, no text.
 /// </param>
 /// <param name="MaxToggleDurationMs">Toggle mode auto-stops here and runs the pipeline.</param>
+/// <param name="Modifiers">
+/// Modifier virtual-keys that must also be held, empty for the bare-modifier default.
+/// </param>
 public sealed record HotkeySettings(
     int VirtualKey = HotkeyBinding.VkRightControl,
     HotkeyMode Mode = HotkeyMode.Hold,
     int MinimumHoldMs = 300,
     int MaxToggleDurationMs = 300_000,
-    bool EnabledInGame = false);
+    bool EnabledInGame = false,
+    IReadOnlyList<int>? Modifiers = null)
+{
+    /// <summary>
+    /// The binding this describes.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="Modifiers"/> arrived late, which is why it is nullable: settings rows written
+    /// before it existed have no value for it, and a null there means the bare key the user
+    /// originally bound rather than an error.
+    /// </remarks>
+    public HotkeyBinding ToBinding() => new(VirtualKey, Modifiers ?? []);
+}
+
+/// <param name="Activation">When Jane holds a capture stream open. See the enum -- the default
+/// is the way it is because of Bluetooth headsets, not because of the mic-in-use indicator.</param>
+/// <param name="IdleReleaseSeconds">
+/// How long the device stays open after a dictation under
+/// <see cref="MicrophoneActivation.WhileDictating"/>.
+/// </param>
+public sealed record MicrophoneSettings(
+    MicrophoneActivation Activation = MicrophoneActivation.WhileDictating,
+    int IdleReleaseSeconds = 8);
 
 /// <param name="IdleUnloadSeconds">
 /// How long after the last dictation Jane issues its single explicit unload. The request-level
@@ -56,7 +81,32 @@ public sealed record LlmSettings(
     InGameBehaviour InGame = InGameBehaviour.SkipLlm,
     bool Enabled = true);
 
-public sealed record OverlaySettings(bool Visible = true, bool ShowContextIndicator = true);
+/// <summary>Where the pill sits when nothing is docked over it.</summary>
+public enum OverlayAnchor
+{
+    /// <summary>
+    /// Default. Centred above the taskbar, which is where a push-to-talk indicator belongs: it
+    /// is on the path between the keyboard and the text you are dictating into.
+    /// </summary>
+    BottomCentre,
+
+    /// <summary>
+    /// The work-area corner nearest the notification area. Out of the way, and next to the tray
+    /// icon that owns it.
+    /// </summary>
+    NearTray,
+}
+
+/// <param name="Visible">Off means Jane never draws a pill at all, in any state.</param>
+/// <param name="ShowWhenIdle">
+/// Whether the pill rests on screen between dictations, naming the hotkey. On by default: a
+/// background app that is invisible until you already know how to use it teaches nobody anything.
+/// </param>
+public sealed record OverlaySettings(
+    bool Visible = true,
+    bool ShowContextIndicator = true,
+    bool ShowWhenIdle = true,
+    OverlayAnchor Anchor = OverlayAnchor.BottomCentre);
 
 /// <param name="MinimumFreeVramBytes">
 /// Below this, the GPU counts as contended even with no game detected. Loading a 2.5 GB model
@@ -92,8 +142,21 @@ public sealed record JaneSettings
 
     public GpuSettings Gpu { get; init; } = new();
 
+    public MicrophoneSettings Microphone { get; init; } = new();
+
     /// <summary>Empty means "use the Windows default communications input".</summary>
     public string? MicrophoneDeviceId { get; init; }
+
+    /// <summary>Which device to open and when, as the audio source wants it.</summary>
+    /// <remarks>
+    /// Not serialised. It is a view over two stored values, and letting it be written would put
+    /// a second copy of both into the settings table for the next reader to disagree with.
+    /// </remarks>
+    [JsonIgnore]
+    public MicrophoneRouting Routing => new(
+        MicrophoneDeviceId,
+        Microphone.Activation,
+        TimeSpan.FromSeconds(Microphone.IdleReleaseSeconds));
 
     /// <summary>Set once onboarding completes, so first run is detected without a sentinel file.</summary>
     public bool OnboardingComplete { get; init; }

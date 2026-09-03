@@ -6,6 +6,7 @@ using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using Jane.Core.Abstractions;
+using Jane.Core.Settings;
 
 namespace Jane.App.Overlay;
 
@@ -31,6 +32,21 @@ public partial class OverlayWindow : Window
     private static readonly TimeSpan HideDuration = TimeSpan.FromMilliseconds(120);
     private static readonly TimeSpan StateCrossfade = TimeSpan.FromMilliseconds(170);
 
+    /// <summary>
+    /// How solid the pill is while something is actually happening.
+    /// </summary>
+    private const double ActiveOpacity = 1.0;
+
+    /// <summary>
+    /// How solid the resting pill is.
+    /// </summary>
+    /// <remarks>
+    /// Dimmed because it is on screen permanently, over whatever the user is really doing. A
+    /// resting indicator at full strength is not an indicator, it is clutter -- and the contrast
+    /// between the two is itself the signal that a dictation has started.
+    /// </remarks>
+    private const double RestingOpacity = 0.55;
+
     /// <summary>~30 fps. Fast enough to read as motion, slow enough to be invisible in a profile.</summary>
     private static readonly TimeSpan WaveformInterval = TimeSpan.FromMilliseconds(33);
 
@@ -40,6 +56,7 @@ public partial class OverlayWindow : Window
     private readonly DispatcherTimer _hideTimer;
 
     private OverlayStatus _status = OverlayStatus.Idle;
+    private OverlayAnchor _anchor = OverlayAnchor.BottomCentre;
     private float _level;
     private nint _handle;
 
@@ -72,6 +89,28 @@ public partial class OverlayWindow : Window
 
     public OverlayStatus Status => _status;
 
+    /// <summary>The opacity the current state animates towards. Dimmer while resting.</summary>
+    public double TargetOpacity { get; private set; } = ActiveOpacity;
+
+    /// <summary>What the pill is drawing at right now, mid-animation included.</summary>
+    public double DrawnOpacity => RootLayer.Opacity;
+
+    /// <summary>Where the pill sits. Changing it re-places the window immediately.</summary>
+    public OverlayAnchor Anchor
+    {
+        get => _anchor;
+        set
+        {
+            if (_anchor == value)
+            {
+                return;
+            }
+
+            _anchor = value;
+            QueueReposition();
+        }
+    }
+
     /// <summary>Applies a status. Must be called on this window's dispatcher.</summary>
     public void Apply(OverlayStatus status)
     {
@@ -90,6 +129,7 @@ public partial class OverlayWindow : Window
         }
 
         _level = status.Level;
+        TargetOpacity = status.State == OverlayState.Ready ? RestingOpacity : ActiveOpacity;
 
         // A dictation in progress pushes a new audio level about thirty times a second with
         // everything else unchanged. Only the waveform pump needs those. Rebuilding the visuals,
@@ -109,6 +149,12 @@ public partial class OverlayWindow : Window
         }
         else if (changed)
         {
+            // Resting and active differ in strength as well as in content, and the pill is
+            // already on screen for the transition between them -- so the fade is part of the
+            // state change rather than something only the show animation does.
+            RootLayer.BeginAnimation(
+                OpacityProperty, Animate(RootLayer.Opacity, TargetOpacity, StateCrossfade));
+
             // The pill resizes to its new message, and OnRenderSizeChanged re-anchors it.
             CrossfadeContent();
         }
@@ -181,6 +227,9 @@ public partial class OverlayWindow : Window
 
     private static string DefaultTextFor(OverlayState state) => state switch
     {
+        // Only a fallback. The resting pill's real text names the bound hotkey, which this
+        // window has no way of knowing -- IdleOverlay builds it and passes it in.
+        OverlayState.Ready => "Jane is ready",
         OverlayState.Listening => "Listening",
         OverlayState.Thinking => "Thinking",
         OverlayState.Injecting => "Inserting text",
@@ -191,6 +240,9 @@ public partial class OverlayWindow : Window
 
     private static Brush BrushFor(OverlayState state) => state switch
     {
+        // The same grey the waveform uses for silence. Resting is not a state with news in it,
+        // and a coloured dot sitting on screen all day reads as one.
+        OverlayState.Ready => JanePalette.WaveformIdle,
         OverlayState.Listening => JanePalette.AccentBrush,
         OverlayState.Thinking => JanePalette.ThinkingBrush,
         OverlayState.Injecting => JanePalette.InjectingBrush,
@@ -228,7 +280,15 @@ public partial class OverlayWindow : Window
 
         AutomationProperties.SetName(this, AccessibleStatusText);
         AutomationProperties.SetName(Pill, AccessibleStatusText);
-        AnnounceLiveRegion();
+
+        // Resting is deliberately not announced. Jane returns to it after every single
+        // dictation, and a screen reader saying "Hold Right Ctrl to dictate" each time somebody
+        // finishes speaking would be unusable. It is still on the automation tree to be read on
+        // request; it just does not interrupt.
+        if (status.State != OverlayState.Ready)
+        {
+            AnnounceLiveRegion();
+        }
     }
 
     private void PulseDot(bool pulse)
@@ -270,7 +330,7 @@ public partial class OverlayWindow : Window
             }
 
             Reposition();
-            RootLayer.BeginAnimation(OpacityProperty, Animate(0, 1, ShowDuration));
+            RootLayer.BeginAnimation(OpacityProperty, Animate(0, TargetOpacity, ShowDuration));
             RootShift.BeginAnimation(TranslateTransform.YProperty, Animate(6, 0, ShowDuration));
         });
     }
@@ -338,9 +398,11 @@ public partial class OverlayWindow : Window
 
         var margin = (int)Math.Round(OverlayPlacement.MarginDip * OverlayInterop.DpiScale(_handle));
 
-        OverlayInterop.MoveWithoutActivating(
-            _handle,
-            OverlayPlacement.Calculate(workArea, edge, rect.Width, rect.Height, margin));
+        var placement = _anchor == OverlayAnchor.BottomCentre
+            ? OverlayPlacement.BottomCentre(workArea, rect.Width, rect.Height, margin)
+            : OverlayPlacement.Calculate(workArea, edge, rect.Width, rect.Height, margin);
+
+        OverlayInterop.MoveWithoutActivating(_handle, placement);
     }
 
     private void AnnounceLiveRegion()

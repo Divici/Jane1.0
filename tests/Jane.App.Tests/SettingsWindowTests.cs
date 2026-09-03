@@ -47,14 +47,19 @@ public sealed class SettingsWindowTests
     [Fact]
     public async Task ChangingOverlayVisibilityReachesTheStoreAndTheOverlay()
     {
+        // The window's job stops at the write. Getting the new value to the pill is
+        // SettingsRepository.Changed's job, and LiveSettingsTests is where that is pinned -- the
+        // callback this test used to assert on was a second, redundant path to the same place,
+        // racing the write it duplicated.
         using var sta = new StaTestContext();
         using var jane = new TempJane();
 
-        var overlayToggles = new List<bool>();
+        var applied = new List<OverlaySettings>();
+        jane.Settings.Changed += (_, settings) => applied.Add(settings.Overlay);
 
         await sta.InvokeAsync(async () =>
         {
-            var window = jane.OpenSettings(overlayVisibilityChanged: overlayToggles.Add);
+            var window = jane.OpenSettings();
 
             Assert.True(window.Model.OverlayVisible);
 
@@ -64,7 +69,7 @@ public sealed class SettingsWindowTests
 
         // Read through a second repository over the same file: the cached value proves nothing.
         Assert.False(jane.ReopenSettings().Overlay.Visible);
-        Assert.Equal([false], overlayToggles);
+        Assert.False(Assert.Single(applied).Visible);
     }
 
     [Fact]
@@ -474,8 +479,8 @@ internal sealed class TempJane : IDisposable
             MicrophoneCheck,
             dictation ?? (_ => Task.FromResult<string?>(null)));
 
-    public Jane.App.Settings.SettingsWindow OpenSettings(Action<bool>? overlayVisibilityChanged = null) =>
-        new(Settings, Dictionary, Instructions, Provisioner, Microphones, new Blocklist(), overlayVisibilityChanged, Database);
+    public Jane.App.Settings.SettingsWindow OpenSettings() =>
+        new(Settings, Dictionary, Instructions, Provisioner, Microphones, new Blocklist(), Database);
 
     /// <param name="live">What the focus tracker reports right now. Defaults to nothing focused.</param>
     /// <param name="inject">Stands in for the real injector, which these tests do not have.</param>

@@ -17,7 +17,7 @@ namespace Jane.Windows.Hotkeys;
 /// </remarks>
 public sealed class HotkeyStateMachine
 {
-    private readonly HotkeyOptions _options;
+    private HotkeyOptions _options;
 
     // Physical key state, rebuilt from the hook's own stream rather than polled from
     // GetAsyncKeyState -- polling would mean a syscall per event, and the hook already sees
@@ -42,6 +42,22 @@ public sealed class HotkeyStateMachine
 
     /// <summary>True between <see cref="HotkeyEventKind.Pressed"/> and whatever ends it.</summary>
     public bool IsActive { get; private set; }
+
+    /// <summary>
+    /// Swaps the thresholds, leaving any dictation in flight running.
+    /// </summary>
+    /// <remarks>
+    /// Unlike <see cref="Rebind"/>, which abandons the hold: the key has not changed, so the
+    /// press that is happening is still a press of the right key. A new minimum hold applies from
+    /// the next verdict, which means a hold already past the old threshold can be cut short by a
+    /// longer new one. That is the correct reading of "the minimum is now longer".
+    /// </remarks>
+    public void Reconfigure(HotkeyOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        _options = options;
+    }
 
     /// <summary>Swaps the binding. Any dictation in flight is abandoned rather than transferred.</summary>
     public void Rebind(HotkeyBinding binding, HotkeyMode mode)

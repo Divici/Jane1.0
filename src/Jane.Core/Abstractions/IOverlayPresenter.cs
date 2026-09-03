@@ -12,6 +12,17 @@ public enum OverlayState
     /// <summary>Hidden entirely. Not a transparent window -- nothing on screen.</summary>
     Idle,
 
+    /// <summary>
+    /// Nothing is happening, but Jane is there. A dimmed pill naming the hotkey.
+    /// </summary>
+    /// <remarks>
+    /// The resting state a background app needs and Jane originally lacked: with the pill only
+    /// appearing while the key was held, nothing on screen said Jane was running, which key it
+    /// was listening for, or that it had been paused from the tray. Distinct from
+    /// <see cref="Idle"/> because "show nothing" is still a setting somebody can choose.
+    /// </remarks>
+    Ready,
+
     /// <summary>Capturing. Shows a live waveform driven by the audio source.</summary>
     Listening,
 

@@ -251,7 +251,7 @@ Aqua's published figure is ~450 ms, cloud-served. Jane beats it on clean dictati
 **Touches:** `src/Jane.Windows/Audio/WasapiCapture.cs`, `PreRollBuffer.cs`, `src/Jane.Speech/SileroVadGate.cs`, `src/Jane.Windows/Hotkeys/LowLevelKeyboardHook.cs`, `HookWatchdog.cs`, `src/Jane.Core/Abstractions/IAudioSource.cs`
 
 **Requirements**
-- [ ] WASAPI shared-mode capture at 16 kHz mono, opened at app start and kept open — the first keypress must never wait on device open. The permanent mic-in-use indicator is documented in onboarding
+- [ ] ~~WASAPI shared-mode capture at 16 kHz mono, opened at app start and kept open — the first keypress must never wait on device open. The permanent mic-in-use indicator is documented in onboarding~~ **Revised — see P14-4.** WASAPI shared-mode capture at 16 kHz mono, opened *on key-down* and released after an idle grace window. Always-open remains available as a setting and is the right choice on a wired microphone
 - [ ] 500 ms ring pre-roll so audio before the key fully registers is retained
 - [ ] `LowLevelKeyboardHook` supports hold-to-talk on modifier-only keys plus a toggle mode, and must not swallow the key from other apps. **The hook proc enqueues only — no allocation, no I/O** — and `HookWatchdog` re-installs the hook if Windows removes it for exceeding the low-level hook timeout
 - [ ] Holds shorter than a configurable minimum (default 300 ms) cancel silently and discard the buffer
@@ -1031,3 +1031,67 @@ The GPU route's higher WER against the *raw* reference is expected and is not a 
 scored against `expectedFormatted`, and the formatter deliberately changes filler-heavy and
 self-correcting fixtures. Its term recall — the metric the dictionary exists to move — is the one
 that reaches 100 %.
+
+---
+
+## Post-acceptance findings
+
+Four items from the first real day of use, on hardware and with a headset the plan never had in
+front of it. Two are defects in shipped work; two are gaps the plan did not think to specify.
+
+**P14-1 — the hotkey could not be changed, and the cause was two settings stores.**
+Rebinding wrote a row nothing read. `JaneHost.Create` composed the keyboard hook from the Phase 1
+`settings.json`, while the settings window writes SQLite; the database imports that file once and
+never again, so the two diverge permanently the moment anyone edits anything. The rebind therefore
+survived neither the moment nor a restart, and Right Ctrl stayed bound forever. Every other value
+the settings window writes had the same defect — the microphone choice, the minimum hold, the
+overlay toggles — it just happened to be the hotkey somebody tried first.
+
+Fixed in two places, because either alone leaves the bug:
+
+- `JaneHost.ReadStartupSettings` makes the database authoritative, with one exception: a `bench`
+  run newer than the one the database records still decides the speech engine, which is the only
+  thing `settings.json` is genuinely the authority on. Stale bench files no longer win.
+- `LiveSettings` subscribes to `SettingsRepository.Changed` — an event that already fired on every
+  write and had no subscribers — and applies the result to the running hook, capture and overlay.
+  Anything not on that one wire is a control that writes a row and changes nothing, which is
+  exactly how this shipped.
+
+A third, smaller defect fell out of the same investigation: `HotkeySettings` had no field for
+modifiers, so an accepted "Ctrl + Shift + F13" was persisted as a bare F13 — a binding the
+validator would have refused, arrived at by saving one it approved.
+
+**P14-2 — the waveform never moved.** `WaveformControl`, its 30 fps render pump and the decayed
+peak meter in `WasapiCapture` were all built and all correct. Nothing connected them.
+`OverlayWindow.Apply` refreshes its level on every call and carries a comment saying it is called
+"about thirty times a second"; its only caller was the pipeline's state-changed event, which fires
+once per state. So the bars were drawn once, at the silence before the first word, and decayed to
+a flat row of dots for the rest of the dictation. `OverlayLevelPump` supplies the missing stream.
+
+**P14-3 — no resting state.** The pill appeared only while the key was held, so nothing on screen
+said Jane was running, which key it was listening for, or that it had been paused from the tray.
+Added `OverlayState.Ready`: a dimmed pill naming the live binding, bottom-centre by default,
+switchable back to the tray corner and off entirely. Paused says so rather than inviting a key
+press that does nothing.
+
+**P14-4 — the always-open microphone was the wrong default, and the plan mispriced it.**
+The plan chose to hold the device open from launch so a key press never waits on a driver, and
+priced that as "a permanent mic-in-use indicator, which onboarding discloses". That price is
+correct on a wired microphone and wrong on Bluetooth. A headset has two profiles: A2DP, which is
+stereo and high bitrate and has no microphone, and HFP, which has a microphone and drops playback
+to a narrowband mono call channel. Windows switches to HFP whenever *any* process holds a capture
+stream. So an always-open microphone does not cost an icon — it costs every other sound on the
+machine, permanently, and the user has no way to connect the two facts.
+
+`MicrophoneActivation.WhileDictating` is now the default: the device opens on key-down and is
+released after an idle grace window (8 s by default). `AlwaysOpen` is kept and is still the right
+choice on a wired microphone.
+
+The honest cost is stated rather than hidden: a cold open has **no pre-roll**, because there is no
+audio to back-date, so the first syllable is at risk on the first dictation after a quiet period.
+The grace window is what stops that being paid on every dictation — a run of quick dictations pays
+it once, and every one after the first has its full 500 ms of pre-roll back.
+
+This revises a locked decision. It is recorded here rather than argued: the lock was made against
+an assumption about what holding the device costs, and the assumption was measurably wrong on the
+hardware Jane actually runs on.

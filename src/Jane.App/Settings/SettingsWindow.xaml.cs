@@ -52,10 +52,6 @@ public partial class SettingsWindow : Window
     /// The live instance, so the Deep Context pane can show what has been auto-blocked in this
     /// session as well as the fixed lists.
     /// </param>
-    /// <param name="overlayVisibilityChanged">
-    /// Called when the floating-bar toggle changes, so the pill can be hidden now rather than at
-    /// the next restart. The window is deliberately not given the presenter itself.
-    /// </param>
     /// <param name="database">
     /// The live database, read only for what About shows: where the file is and which migrations
     /// it has run. "Plaintext until you delete it" is a claim; a path somebody can open is what
@@ -68,9 +64,8 @@ public partial class SettingsWindow : Window
         IModelProvisioner provisioner,
         IMicrophoneCatalog microphones,
         Blocklist blocklist,
-        Action<bool>? overlayVisibilityChanged = null,
         JaneDatabase? database = null)
-        : this(Build(settings, dictionary, instructions, provisioner, microphones, blocklist, overlayVisibilityChanged, database))
+        : this(Build(settings, dictionary, instructions, provisioner, microphones, blocklist, database))
     {
     }
 
@@ -81,9 +76,8 @@ public partial class SettingsWindow : Window
         IModelProvisioner provisioner,
         IMicrophoneCatalog microphones,
         Blocklist blocklist,
-        Action<bool>? overlayVisibilityChanged,
         JaneDatabase? database) =>
-        new(settings, dictionary, instructions, provisioner, microphones, blocklist, overlayVisibilityChanged)
+        new(settings, dictionary, instructions, provisioner, microphones, blocklist)
         {
             DatabaseLocation = database?.Path ?? new JanePaths().Database,
             SchemaDescription = Describe(database),

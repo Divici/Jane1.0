@@ -78,4 +78,14 @@ public interface IHotkeyListener : IDisposable
     void Start();
 
     void Rebind(HotkeyBinding binding, HotkeyMode mode);
+
+    /// <summary>
+    /// Swaps the hold thresholds on a listener that is already installed.
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="Rebind"/> because these are the only two settings that change the
+    /// meaning of a key press without changing which key it is, and because a rebind abandons any
+    /// dictation in flight while a threshold change has no reason to.
+    /// </remarks>
+    void Reconfigure(TimeSpan minimumHold, TimeSpan maxDuration);
 }

@@ -28,6 +28,18 @@ public sealed record InGameChoice(InGameBehaviour Behaviour, string Name, string
     public override string ToString() => Name;
 }
 
+/// <summary>When Jane holds the microphone open, in words.</summary>
+public sealed record ActivationChoice(MicrophoneActivation Activation, string Name, string Description)
+{
+    public override string ToString() => Name;
+}
+
+/// <summary>Where the floating pill sits, in words.</summary>
+public sealed record AnchorChoice(OverlayAnchor Anchor, string Name, string Description)
+{
+    public override string ToString() => Name;
+}
+
 /// <summary>
 /// Everything the settings window edits, and the one place a change becomes a row in SQLite.
 /// </summary>
@@ -44,10 +56,12 @@ public sealed record InGameChoice(InGameBehaviour Behaviour, string Name, string
 /// worth making about a settings window.
 /// </para>
 /// <para>
-/// The one setting that is not merely stored is overlay visibility: the pill has to be told, or
-/// it stays on screen until the next restart and the toggle looks broken. That arrives as a
-/// callback rather than as an <c>IOverlayPresenter</c>, because a settings window that holds the
-/// presenter could show the pill, and it has no business doing that.
+/// Storing is all this class does. Nothing here reaches into the running app to apply a change --
+/// <c>LiveSettings</c> does that, from <see cref="SettingsRepository.Changed"/>. Overlay
+/// visibility used to be the exception, delivered through a callback threaded in from the host,
+/// and the lesson of that arrangement is why there are no exceptions now: a setting whose
+/// application depends on somebody having remembered to wire a callback is a setting that
+/// silently does nothing when they did not.
 /// </para>
 /// </remarks>
 public sealed class SettingsViewModel : ObservableObject, IDisposable
@@ -55,7 +69,6 @@ public sealed class SettingsViewModel : ObservableObject, IDisposable
     private readonly SettingsRepository _settings;
     private readonly IModelProvisioner _provisioner;
     private readonly IMicrophoneCatalog _microphones;
-    private readonly Action<bool>? _overlayVisibilityChanged;
     private readonly SemaphoreSlim _writeGate = new(1, 1);
 
     private JaneSettings _current;
@@ -70,8 +83,7 @@ public sealed class SettingsViewModel : ObservableObject, IDisposable
         CustomInstructions instructions,
         IModelProvisioner provisioner,
         IMicrophoneCatalog microphones,
-        Blocklist blocklist,
-        Action<bool>? overlayVisibilityChanged = null)
+        Blocklist blocklist)
     {
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(dictionary);
@@ -83,10 +95,9 @@ public sealed class SettingsViewModel : ObservableObject, IDisposable
         _settings = settings;
         _provisioner = provisioner;
         _microphones = microphones;
-        _overlayVisibilityChanged = overlayVisibilityChanged;
 
         _current = settings.Read();
-        _hotkey = new HotkeyBinding(_current.Hotkey.VirtualKey, []);
+        _hotkey = _current.Hotkey.ToBinding();
         _hotkeyStatus = HotkeyValidator.Validate(_hotkey);
 
         Dictionary = new DictionaryEditor(dictionary);
@@ -158,7 +169,19 @@ public sealed class SettingsViewModel : ObservableObject, IDisposable
         }
 
         Hotkey = binding;
-        Persist(s => s with { Hotkey = s.Hotkey with { VirtualKey = binding.VirtualKey } });
+
+        // Modifiers as well as the key. Persisting only the virtual key turned an accepted
+        // "Ctrl + Shift + F13" into a bare F13 -- a binding the validator would have refused,
+        // arrived at by saving one the validator approved.
+        Persist(s => s with
+        {
+            Hotkey = s.Hotkey with
+            {
+                VirtualKey = binding.VirtualKey,
+                Modifiers = binding.RequiresModifiers.Count == 0 ? null : [.. binding.RequiresModifiers],
+            },
+        });
+
         return true;
     }
 
@@ -255,6 +278,58 @@ public sealed class SettingsViewModel : ObservableObject, IDisposable
 
     /// <summary>True when Windows reports no capture endpoint at all -- the designed empty state.</summary>
     public bool HasNoMicrophone => Microphones.Count <= 1;
+
+    public IReadOnlyList<ActivationChoice> Activations { get; } =
+    [
+        new(MicrophoneActivation.WhileDictating, "Only while I'm dictating",
+            "The default. Jane opens the microphone when you press the key and lets go of it a few seconds later, so nothing shows the mic as in use the rest of the time. Necessary on a Bluetooth headset: Windows drops the headset into its low-quality call mode for as long as any app holds the microphone, which quietly degrades everything else you are listening to."),
+        new(MicrophoneActivation.AlwaysOpen, "All the time",
+            "Holds the microphone open from launch. The first word of a dictation is never clipped, because Jane already has the half-second before you pressed the key. Right for a wired microphone; on a Bluetooth headset it keeps the headset in call mode permanently."),
+    ];
+
+    /// <summary>When Jane holds the microphone open. The Bluetooth question, in one control.</summary>
+    public ActivationChoice MicrophoneActivationChoice
+    {
+        get => Activations.First(a => a.Activation == _current.Microphone.Activation);
+        set
+        {
+            if (value is null || value.Activation == _current.Microphone.Activation)
+            {
+                return;
+            }
+
+            Persist(s => s with { Microphone = s.Microphone with { Activation = value.Activation } });
+            Raise();
+            Raise(nameof(IsMicrophoneOnDemand));
+        }
+    }
+
+    public bool IsMicrophoneOnDemand =>
+        _current.Microphone.Activation == MicrophoneActivation.WhileDictating;
+
+    /// <summary>
+    /// How long the microphone stays open after a dictation, in seconds.
+    /// </summary>
+    /// <remarks>
+    /// The knob that makes on-demand activation usable rather than merely correct: a run of quick
+    /// dictations pays the device-open cost once instead of once each, and every dictation after
+    /// the first gets its pre-roll back.
+    /// </remarks>
+    public int MicrophoneIdleReleaseSeconds
+    {
+        get => _current.Microphone.IdleReleaseSeconds;
+        set
+        {
+            var clamped = Math.Clamp(value, 0, 120);
+            if (clamped == _current.Microphone.IdleReleaseSeconds)
+            {
+                return;
+            }
+
+            Persist(s => s with { Microphone = s.Microphone with { IdleReleaseSeconds = clamped } });
+            Raise();
+        }
+    }
 
     /// <summary>Re-enumerates. A headset plugged in while the window is open should appear.</summary>
     public void RefreshMicrophones()
@@ -542,12 +617,11 @@ public sealed class SettingsViewModel : ObservableObject, IDisposable
                 return;
             }
 
+            // The pill is told through SettingsRepository.Changed, like every other setting.
+            // It used to be told through a callback threaded in from the host as well, which
+            // meant two writes racing to save the same value.
             Persist(s => s with { Overlay = s.Overlay with { Visible = value } });
             Raise();
-
-            // The pill has to be told, or it stays on screen until the next restart and the
-            // toggle looks like it did nothing.
-            _overlayVisibilityChanged?.Invoke(value);
         }
     }
 
@@ -562,6 +636,45 @@ public sealed class SettingsViewModel : ObservableObject, IDisposable
             }
 
             Persist(s => s with { Overlay = s.Overlay with { ShowContextIndicator = value } });
+            Raise();
+        }
+    }
+
+    /// <summary>Whether the pill rests on screen between dictations, naming the hotkey.</summary>
+    public bool OverlayShowWhenIdle
+    {
+        get => _current.Overlay.ShowWhenIdle;
+        set
+        {
+            if (value == _current.Overlay.ShowWhenIdle)
+            {
+                return;
+            }
+
+            Persist(s => s with { Overlay = s.Overlay with { ShowWhenIdle = value } });
+            Raise();
+        }
+    }
+
+    public IReadOnlyList<AnchorChoice> Anchors { get; } =
+    [
+        new(OverlayAnchor.BottomCentre, "Bottom centre",
+            "Centred above the taskbar, on the path between the keyboard and whatever you are dictating into."),
+        new(OverlayAnchor.NearTray, "Near the tray icon",
+            "The corner closest to the notification area, next to the icon that owns it. Further out of the way, and further from where you are looking."),
+    ];
+
+    public AnchorChoice OverlayAnchorChoice
+    {
+        get => Anchors.First(a => a.Anchor == _current.Overlay.Anchor);
+        set
+        {
+            if (value is null || value.Anchor == _current.Overlay.Anchor)
+            {
+                return;
+            }
+
+            Persist(s => s with { Overlay = s.Overlay with { Anchor = value.Anchor } });
             Raise();
         }
     }

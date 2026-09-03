@@ -105,7 +105,7 @@ public sealed class FirstRunViewModel : ObservableObject, IDisposable
         new(OnboardingStep.Welcome, "Welcome to Jane",
             "Jane types what you say into whatever you are already using. Every model runs on this machine, and nothing you dictate ever leaves it."),
         new(OnboardingStep.Microphone, "Can Jane hear you?",
-            "Pick the microphone you want to dictate with and say something. Jane opens it in shared mode and keeps it open, so it never takes the device away from a call."),
+            "Pick the microphone you want to dictate with and say something. Jane opens it in shared mode, only while you are actually dictating, so it never takes the device away from a call and never leaves a Bluetooth headset stuck in call mode."),
         new(OnboardingStep.Models, "Getting the models",
             "This is the only time Jane uses the network. Each file is pinned by address and checksum, and a download that stops picks up where it left off -- including after a restart."),
         new(OnboardingStep.Hotkey, "Choose your key",

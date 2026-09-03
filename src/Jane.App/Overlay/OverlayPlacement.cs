@@ -102,6 +102,36 @@ public static class OverlayPlacement
             Clamp(y, workArea.Top, workArea.Bottom - windowHeight));
     }
 
+    /// <summary>
+    /// Places the pill centred along the bottom of the work area.
+    /// </summary>
+    /// <remarks>
+    /// The default, and where a push-to-talk indicator belongs: it sits on the path between the
+    /// keyboard and the thing being dictated into, rather than in the corner where a background
+    /// app's status usually hides. The work area already excludes the taskbar, so "the bottom of
+    /// the screen" means just above it wherever it happens to be docked -- and on a machine with
+    /// the taskbar on the left or right, this still reads as the bottom edge.
+    /// </remarks>
+    /// <param name="workArea">
+    /// The work area of the monitor the pill belongs on, in physical pixels on the virtual
+    /// desktop. Never <c>SystemParameters.PrimaryScreen*</c>: a second monitor to the left has
+    /// negative coordinates, and assuming an origin of zero puts the pill on the wrong display.
+    /// </param>
+    /// <param name="margin">Gap from the work-area floor, in physical pixels for that monitor.</param>
+    public static PixelPoint BottomCentre(
+        PixelRect workArea,
+        int windowWidth,
+        int windowHeight,
+        int margin)
+    {
+        var x = workArea.Left + ((workArea.Width - windowWidth) / 2);
+        var y = workArea.Bottom - margin - windowHeight;
+
+        return new PixelPoint(
+            Clamp(x, workArea.Left, workArea.Right - windowWidth),
+            Clamp(y, workArea.Top, workArea.Bottom - windowHeight));
+    }
+
     // A long error message on a small display can be wider than the work area, which inverts the
     // clamp range. Starting on-screen and overflowing the far edge beats the reverse.
     private static int Clamp(int value, int min, int max) =>

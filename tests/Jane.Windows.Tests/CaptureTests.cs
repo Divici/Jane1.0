@@ -10,9 +10,22 @@ namespace Jane.Windows.Tests;
 /// microphone attached. The WASAPI-specific code sits behind <see cref="ICaptureDeviceFactory"/>
 /// precisely so these rules can be pinned without hardware.
 /// </summary>
+/// <remarks>
+/// Everything here runs under <see cref="MicrophoneActivation.AlwaysOpen"/>, stated explicitly
+/// rather than taken from the default. These are the guarantees that depend on the device being
+/// held open -- the full pre-roll window, a device opened exactly once, a reconnect loop that
+/// resumes after a disconnect -- and they are all still exactly right under that mode. The
+/// default moved to <see cref="MicrophoneActivation.WhileDictating"/> for the sake of Bluetooth
+/// headsets, and <see cref="MicrophoneActivationTests"/> is where that mode is pinned.
+/// </remarks>
 public sealed class CaptureTests
 {
-    private static readonly AudioCaptureOptions FastOptions = new()
+    private static readonly AudioCaptureOptions HeldOpen = new()
+    {
+        Activation = MicrophoneActivation.AlwaysOpen,
+    };
+
+    private static readonly AudioCaptureOptions FastOptions = HeldOpen with
     {
         PreRoll = TimeSpan.FromMilliseconds(100),
         ReconnectInterval = TimeSpan.FromMilliseconds(10),
@@ -38,7 +51,7 @@ public sealed class CaptureTests
         // The plan's headline capture guarantee, end to end: the samples the device produced
         // 300 ms before Arm() must still be in the buffer Stop() hands back.
         var devices = new FakeCaptureDeviceFactory();
-        await using var capture = new WasapiCapture(devices, new AudioCaptureOptions());
+        await using var capture = new WasapiCapture(devices, HeldOpen);
         await capture.OpenAsync(TestContext.Current.CancellationToken);
 
         devices.Current!.Emit(Ramp(0, AudioFormat.SampleRate)); // one second before the key press
@@ -294,47 +307,5 @@ public sealed class CaptureTests
         var output = converter.Convert(MemoryMarshal.AsBytes(input.AsSpan()));
 
         Assert.Equal(input, output.ToArray());
-    }
-
-    private sealed class FakeCaptureDeviceFactory : ICaptureDeviceFactory
-    {
-        public int OpenCount { get; private set; }
-
-        public AudioDeviceException? OpenFailure { get; init; }
-
-        public FakeCaptureStream? Current { get; private set; }
-
-        public Task<ICaptureStream> OpenAsync(string? deviceId, CancellationToken cancellationToken)
-        {
-            OpenCount++;
-            if (OpenFailure is not null)
-            {
-                throw new AudioDeviceException(OpenFailure.Failure, OpenFailure.Message);
-            }
-
-            Current = new FakeCaptureStream();
-            return Task.FromResult<ICaptureStream>(Current);
-        }
-    }
-
-    private sealed class FakeCaptureStream : ICaptureStream
-    {
-        public string DeviceName => "Fake Microphone";
-
-        public bool IsDisposed { get; private set; }
-
-        public event EventHandler<ReadOnlyMemory<float>>? SamplesAvailable;
-
-        public event EventHandler<AudioDeviceException?>? Stopped;
-
-        public void Start()
-        {
-        }
-
-        public void Emit(ReadOnlyMemory<float> samples) => SamplesAvailable?.Invoke(this, samples);
-
-        public void Fault(AudioDeviceException error) => Stopped?.Invoke(this, error);
-
-        public void Dispose() => IsDisposed = true;
     }
 }

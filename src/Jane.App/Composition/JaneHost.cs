@@ -2,6 +2,7 @@ using System.IO;
 using System.Net.Http;
 using System.Windows.Threading;
 using Jane.App.Onboarding;
+using Jane.App.Overlay;
 using Jane.App.Settings;
 using Jane.Core.Abstractions;
 using Jane.Core.Formatting;
@@ -44,7 +45,25 @@ public sealed class JaneHost : IAsyncDisposable
     private readonly UiaContextReader _context;
     private readonly IFocusTracker _focus;
     private readonly ITextInjector _injector;
-    private bool _overlayVisible = true;
+    private readonly OverlayLevelPump _levelPump;
+    private readonly LiveSettings _live;
+
+    /// <summary>
+    /// Watches for a game or a video taking the screen, so the resting pill can get out of the way.
+    /// </summary>
+    /// <remarks>
+    /// Four seconds, and only while the resting pill is enabled. It is two cheap syscalls -- the
+    /// same pair <see cref="FullscreenDetector"/> makes for the GPU governor -- and a game does not
+    /// start and stop within one of them, so anything faster is polling for its own sake.
+    /// </remarks>
+    private static readonly TimeSpan FullscreenPollInterval = TimeSpan.FromSeconds(4);
+
+    private readonly FullscreenDetector _fullscreen = new();
+    private readonly Timer _fullscreenPoll;
+
+    private OverlaySettings _overlaySettings = new();
+    private HotkeyBinding _binding = HotkeyBinding.Default;
+    private bool _screenIsBusy;
     private bool _paused;
     private bool _disposed;
 
@@ -86,6 +105,17 @@ public sealed class JaneHost : IAsyncDisposable
         _hotkeys = hotkeys;
         _overlay = overlay;
         Orchestrator = orchestrator;
+
+        // The waveform's level: 30 fps of it, for as long as a dictation is listening. Without
+        // this the pill's bars are drawn once, at the silence that precedes the first word, and
+        // stay flat for the whole dictation.
+        _levelPump = new OverlayLevelPump(overlay, () => _capture.CurrentLevel);
+
+        // One wire from the settings database to everything in this graph that holds a copy of a
+        // setting. Anything not on it is a control that writes a row and changes nothing.
+        _live = new LiveSettings(hotkeys, capture, OnOverlaySettingsChanged);
+
+        _fullscreenPoll = new Timer(_ => PollFullscreen(), null, Timeout.Infinite, Timeout.Infinite);
     }
 
     public DictationOrchestrator Orchestrator { get; }
@@ -168,14 +198,60 @@ public sealed class JaneHost : IAsyncDisposable
     /// <summary>The last text Jane injected, so onboarding can show what it heard.</summary>
     public string? LastInjectedText { get; private set; }
 
-    /// <summary>Shows or hides the floating pill. Aqua's "Show Floating Bar".</summary>
-    public void SetOverlayVisible(bool visible)
+    /// <summary>
+    /// Shows or hides the floating pill. Aqua's "Show Floating Bar".
+    /// </summary>
+    /// <remarks>
+    /// Written through the settings database rather than held in a field, so it survives a
+    /// restart and so the settings window and the tray cannot disagree about it. The change
+    /// arrives back here through <see cref="LiveSettings"/> like any other.
+    /// </remarks>
+    public void SetOverlayVisible(bool visible) =>
+        _ = Settings2.UpdateAsync(
+            s => s with { Overlay = s.Overlay with { Visible = visible } },
+            CancellationToken.None);
+
+    private void OnOverlaySettingsChanged(OverlaySettings overlay)
     {
-        _overlayVisible = visible;
-        if (!visible)
+        _overlaySettings = overlay;
+        _binding = Settings2.Current.Hotkey.ToBinding();
+
+        if (_overlay is OverlayPresenter presenter)
         {
-            _overlay.Hide();
+            _dispatcher.BeginInvoke(() => presenter.Window.Anchor = overlay.Anchor);
         }
+
+        // Nothing to watch for when the pill never rests on screen anyway.
+        var watching = overlay is { Visible: true, ShowWhenIdle: true };
+        _fullscreenPoll.Change(
+            watching ? TimeSpan.Zero : Timeout.InfiniteTimeSpan,
+            watching ? FullscreenPollInterval : Timeout.InfiniteTimeSpan);
+
+        if (!watching)
+        {
+            _screenIsBusy = false;
+        }
+
+        // Republish, so turning the resting pill on or off is visible immediately rather than
+        // after whatever the user next dictates.
+        RefreshOverlay(Orchestrator.Status);
+    }
+
+    private void PollFullscreen()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        var busy = _fullscreen.Detect().Signals != GameSignals.None;
+        if (busy == _screenIsBusy)
+        {
+            return;
+        }
+
+        _screenIsBusy = busy;
+        RefreshOverlay(Orchestrator.Status);
     }
 
     public JaneSettings Settings => _settings.Current;
@@ -183,12 +259,64 @@ public sealed class JaneHost : IAsyncDisposable
     /// <summary>Reports startup progress so the tray tooltip can say "starting" rather than lying.</summary>
     public bool IsReady { get; private set; }
 
+    /// <summary>
+    /// The settings Jane actually starts from, given two stores that can disagree.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Phase 10 moved settings into SQLite and left <c>settings.json</c> in place, because `bench`
+    /// still writes it and `bench` runs in another process while Jane is closed. The database
+    /// imports that file once, when its settings table is empty, and never again -- re-importing
+    /// on every start would let a stale file undo a change made in the settings window.
+    /// </para>
+    /// <para>
+    /// Composition then read the file rather than the database, which meant every value the
+    /// settings window wrote was ignored at startup. That is the reported hotkey bug: rebinding
+    /// wrote a row nothing read, so Right Ctrl stayed bound across restarts as well as within one.
+    /// </para>
+    /// <para>
+    /// The rule is: the database wins, because it is the only store a person edits. The single
+    /// exception is a `bench` run newer than the one the database has recorded, which is a
+    /// deliberate re-measurement of which engine this machine should use and is the one thing the
+    /// file is still the authority on.
+    /// </para>
+    /// </remarks>
+    public static JaneSettings ReadStartupSettings(SettingsStore benchFile, SettingsRepository database)
+    {
+        ArgumentNullException.ThrowIfNull(benchFile);
+        ArgumentNullException.ThrowIfNull(database);
+
+        var stored = database.Read();
+        var bench = benchFile.Read();
+
+        if (bench.BenchmarkedAt is not { } measured ||
+            (stored.BenchmarkedAt is { } known && measured <= known))
+        {
+            return stored;
+        }
+
+        return stored with { Speech = bench.Speech, BenchmarkedAt = measured };
+    }
+
     public static JaneHost Create(Dispatcher dispatcher, IOverlayPresenter overlay)
     {
         var paths = new JanePaths();
         var settings = new SettingsStore(paths);
-        var current = settings.Read();
         settings.StartWatching();
+
+        // Settings, dictionary, instructions and history all live in one SQLite file. Opened
+        // first, because it holds the settings everything below is composed from -- see
+        // ReadStartupSettings for why the database rather than the file.
+        var database = JaneDatabase.Open(paths);
+        var settingsRepository = new SettingsRepository(database);
+        var current = ReadStartupSettings(settings, settingsRepository);
+
+        if (current.BenchmarkedAt != settingsRepository.Current.BenchmarkedAt)
+        {
+            // A newer bench result was adopted. Write it down, so the next start does not have to
+            // work it out again and the settings window shows the engine actually in use.
+            settingsRepository.WriteAsync(current, CancellationToken.None).GetAwaiter().GetResult();
+        }
 
         // Engine selection comes from `bench`, not from a constant here. Re-running the bench
         // in another process is picked up on the next read; see SettingsStore.StartWatching.
@@ -196,10 +324,10 @@ public sealed class JaneHost : IAsyncDisposable
 
         var vad = new SileroVadGate(ModelCatalog.SileroVad.ResolvePath(paths.Models));
 
-        var capture = WasapiCapture.ForDefaultDevice(new AudioCaptureOptions() with
+        var capture = WasapiCapture.ForDefaultDevice(new AudioCaptureOptions()
+            .With(current.Routing) with
         {
             MaxCaptureDuration = TimeSpan.FromMilliseconds(current.Hotkey.MaxToggleDurationMs),
-            DeviceId = current.MicrophoneDeviceId,
         });
 
         var focus = new FocusedAppIdentity();
@@ -219,9 +347,6 @@ public sealed class JaneHost : IAsyncDisposable
             ? LlmStack.Create(Path.Combine(RepoOrInstallRoot(), "tools", "ollama", "ollama.exe"), current)
             : null;
 
-        // Settings, dictionary, instructions and history all live in one SQLite file, opened once
-        // here. The migration runner brings the Phase 1 settings.json across on first open.
-        var database = JaneDatabase.Open(paths);
         var dictionary = new UserDictionary(database);
         var instructions = new CustomInstructions(database);
         var history = new HistoryStore(database);
@@ -272,7 +397,7 @@ public sealed class JaneHost : IAsyncDisposable
             new SendInputSubmitter(sendInput));
 
         var hotkeys = new LowLevelKeyboardHook(
-            new HotkeyBinding(current.Hotkey.VirtualKey, []),
+            current.Hotkey.ToBinding(),
             current.Hotkey.Mode,
             new HotkeyOptions
             {
@@ -280,7 +405,6 @@ public sealed class JaneHost : IAsyncDisposable
                 MaxDuration = TimeSpan.FromMilliseconds(current.Hotkey.MaxToggleDurationMs),
             });
 
-        var settingsRepository = new SettingsRepository(database);
         var downloader = new ModelDownloader(new HttpClient(), paths.Models);
 
         // Onboarding must not leave a manual `ollama pull` as homework, so the provisioner drives
@@ -352,6 +476,10 @@ public sealed class JaneHost : IAsyncDisposable
     {
         Orchestrator.StateChanged += OnPipelineStateChanged;
 
+        // Applies the stored settings now and on every subsequent write, which is also what puts
+        // the resting pill on screen for the first time.
+        _live.Attach(Settings2);
+
         if (_llm is not null)
         {
             // Started before the hook, so the first dictation never races the server coming up.
@@ -373,13 +501,23 @@ public sealed class JaneHost : IAsyncDisposable
 
     /// <summary>Stops the hotkey firing without tearing the graph down.</summary>
     /// <remarks>
-    /// The hook stays installed and the microphone stays open. Re-opening the device on unpause
-    /// would reintroduce the device-open latency that keeping it open exists to avoid, and the
-    /// idle cost of an open capture is a fraction of a percent of one core.
+    /// The hook stays installed. The microphone needs no special handling either way: under the
+    /// default activation it is only open while a dictation is running, and a paused Jane never
+    /// starts one.
     /// </remarks>
-    public void SetPaused(bool paused) => _paused = paused;
+    public void SetPaused(bool paused)
+    {
+        _paused = paused;
 
-    public void SetMode(HotkeyMode mode) => _hotkeys.Rebind(_hotkeys.Binding, mode);
+        // The resting pill says which of the two it is. Without this it keeps inviting a key
+        // press that does nothing, and the user concludes Jane is broken rather than paused.
+        RefreshOverlay(Orchestrator.Status);
+    }
+
+    public void SetMode(HotkeyMode mode) =>
+        _ = Settings2.UpdateAsync(
+            s => s with { Hotkey = s.Hotkey with { Mode = mode } },
+            CancellationToken.None);
 
     private void OnHotkeyEvent(object? sender, HotkeyEvent hotkeyEvent)
     {
@@ -400,13 +538,28 @@ public sealed class JaneHost : IAsyncDisposable
 
     private void OnPipelineStateChanged(object? sender, PipelineStatus status)
     {
-        // The presenter marshals to the dispatcher itself, so this can be called from the
-        // pipeline's own thread without a hop here.
+        RefreshOverlay(status);
+
+        // Started after the status is published, stopped before the next one: the pump only ever
+        // republishes a Listening status it found already in place.
+        _levelPump.OnState(status);
+    }
+
+    /// <summary>
+    /// Publishes what the pill should be showing right now.
+    /// </summary>
+    /// <remarks>
+    /// The presenter marshals to the dispatcher itself, so this can be called from the pipeline's
+    /// own thread without a hop here.
+    /// </remarks>
+    private void RefreshOverlay(PipelineStatus status)
+    {
         var level = status.State is PipelineState.Arming or PipelineState.Listening
             ? _capture.CurrentLevel
             : 0f;
 
-        _overlay.Show(status.ToOverlayStatus(level));
+        _overlay.Show(IdleOverlay.For(
+            status.ToOverlayStatus(level), _overlaySettings, _binding, _paused, _screenIsBusy));
     }
 
     public async ValueTask DisposeAsync()
@@ -420,6 +573,9 @@ public sealed class JaneHost : IAsyncDisposable
 
         _hotkeys.HotkeyEvent -= OnHotkeyEvent;
         Orchestrator.StateChanged -= OnPipelineStateChanged;
+        _live.Dispose();
+        _levelPump.Dispose();
+        await _fullscreenPoll.DisposeAsync();
         _hotkeys.Dispose();
 
         await Orchestrator.DisposeAsync();

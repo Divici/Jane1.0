@@ -51,13 +51,55 @@ public sealed record CapturedAudio(
 /// <param name="IsCapturing">True between arm and stop. The overlay's "listening" state mirrors this.</param>
 public sealed record AudioSourceState(bool IsOpen, bool IsCapturing, string? DeviceName, string? Error);
 
+/// <summary>When Jane holds a capture stream on the microphone.</summary>
+/// <remarks>
+/// <para>
+/// This is not the free choice it looks like. Windows switches a Bluetooth headset from A2DP to
+/// the hands-free profile the moment any process opens a capture stream on it, and the hands-free
+/// profile is a narrowband mono call channel -- so an always-open microphone silently degrades
+/// every other sound on the machine for as long as Jane is running.
+/// </para>
+/// <para>
+/// The plan originally priced holding the device open as "a permanent mic-in-use indicator". On
+/// a wired microphone that is the whole cost and <see cref="AlwaysOpen"/> is the better setting.
+/// On Bluetooth it is not, which is why the default changed.
+/// </para>
+/// </remarks>
+public enum MicrophoneActivation
+{
+    /// <summary>
+    /// Default. The device is opened when the hotkey goes down and released a short while after
+    /// the dictation ends. Costs the device-open latency on a cold press -- and with it the
+    /// pre-roll, which cannot back-date audio that was never captured.
+    /// </summary>
+    WhileDictating,
+
+    /// <summary>
+    /// Opened at startup and held. No open latency, full pre-roll, and a microphone that is in
+    /// use for as long as Jane is.
+    /// </summary>
+    AlwaysOpen,
+}
+
+/// <param name="DeviceId">Null means the Windows default communications input.</param>
+/// <param name="IdleRelease">
+/// How long a <see cref="MicrophoneActivation.WhileDictating"/> device stays open after a
+/// dictation ends. Long enough that a run of quick dictations pays the open cost once; short
+/// enough that a headset is back in stereo before the user notices it left.
+/// </param>
+public sealed record MicrophoneRouting(
+    string? DeviceId,
+    MicrophoneActivation Activation,
+    TimeSpan IdleRelease);
+
 /// <summary>
-/// A microphone, opened once at app start and held open.
+/// A microphone.
 /// </summary>
 /// <remarks>
-/// Opening on key-down would put device-open latency -- tens to hundreds of milliseconds -- on
-/// the path the user feels most, and would clip the first word. The cost is a permanent
-/// mic-in-use indicator, which onboarding discloses.
+/// Whether the device is held open or opened per dictation is
+/// <see cref="MicrophoneActivation"/>'s decision, and the difference is invisible from here:
+/// <see cref="OpenAsync"/> is always called at startup and <see cref="Arm"/> is always called on
+/// key-down, whichever of them actually touches the hardware.
 /// </remarks>
 public interface IAudioSource : IAsyncDisposable
 {
@@ -65,15 +107,26 @@ public interface IAudioSource : IAsyncDisposable
 
     event EventHandler<AudioSourceState>? StateChanged;
 
-    /// <summary>Opens the device and starts filling the pre-roll ring. Idempotent.</summary>
+    /// <summary>
+    /// Readies the microphone. Opens the device under
+    /// <see cref="MicrophoneActivation.AlwaysOpen"/> and does nothing under
+    /// <see cref="MicrophoneActivation.WhileDictating"/>. Idempotent.
+    /// </summary>
     Task OpenAsync(CancellationToken cancellationToken);
 
     /// <summary>
-    /// Begins retaining samples, back-dated by the pre-roll window. Free -- no model work starts
+    /// Begins retaining samples, back-dated by whatever pre-roll exists. No model work starts
     /// here; that waits until the VAD confirms real speech.
     /// </summary>
+    /// <remarks>
+    /// Never blocks. Under <see cref="MicrophoneActivation.WhileDictating"/> this starts a device
+    /// open and returns; samples are retained from the moment the device is live.
+    /// </remarks>
     void Arm();
 
     /// <summary>Ends the capture and returns everything retained since <see cref="Arm"/>.</summary>
     CapturedAudio Stop(CaptureStopReason reason);
+
+    /// <summary>Changes which device is used and when it is held open, without a restart.</summary>
+    void Reconfigure(MicrophoneRouting routing);
 }

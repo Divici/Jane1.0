@@ -4,17 +4,22 @@ using Jane.Core.Abstractions;
 namespace Jane.Windows.Audio;
 
 /// <summary>
-/// Jane's microphone: opened once at app start, held open, and armed on key-down.
+/// Jane's microphone: armed on key-down, and open either permanently or only while dictating.
 /// </summary>
 /// <remarks>
-/// Three rules live here and nowhere else.
+/// Four rules live here and nowhere else.
 /// <list type="bullet">
-/// <item>The device is opened at startup, so a key press never waits on a driver. The cost is a
-/// permanent mic-in-use indicator, which onboarding discloses.</item>
-/// <item>Arming back-dates the buffer by the pre-roll window, so the first word survives the
-/// tens of milliseconds between "the user started talking" and "the key registered".</item>
+/// <item><see cref="MicrophoneActivation"/> decides when the device is open. The default opens
+/// it on key-down and releases it a few seconds after the dictation ends, because a held-open
+/// capture stream forces a Bluetooth headset into its narrowband call profile and quietly ruins
+/// every other sound on the machine.</item>
+/// <item>Arming back-dates the buffer by whatever pre-roll exists, so the first word survives the
+/// tens of milliseconds between "the user started talking" and "the key registered". A cold open
+/// has no pre-roll to back-date, which is the honest cost of not holding the device.</item>
 /// <item>A capture is capped in length and a lost device is reconnected, both without the app
 /// restarting and without the caller having to poll anything.</item>
+/// <item>Everything is swappable at runtime through <see cref="Reconfigure"/>: choosing a
+/// different microphone in settings must not need a restart.</item>
 /// </list>
 /// The class is named for WASAPI because that is what it is in production, but it holds no Win32
 /// itself -- <see cref="ICaptureDeviceFactory"/> is the only door to the hardware.
@@ -22,17 +27,28 @@ namespace Jane.Windows.Audio;
 public sealed class WasapiCapture : IAudioSource
 {
     private readonly ICaptureDeviceFactory _devices;
-    private readonly AudioCaptureOptions _options;
     private readonly PreRollBuffer _preRoll;
     private readonly ArrayBufferWriter<float> _captured;
     private readonly int _maxCaptureSamples;
     private readonly SemaphoreSlim _openGate = new(1, 1);
     private readonly Lock _captureGate = new();
 
+    /// <summary>
+    /// Fires once, <see cref="AudioCaptureOptions.IdleRelease"/> after a dictation ends.
+    /// </summary>
+    /// <remarks>
+    /// A timer rather than a delay task because it is rescheduled on every dictation, and a
+    /// cancelled-and-recreated task per key press is a lot of garbage for something that usually
+    /// does nothing.
+    /// </remarks>
+    private readonly Timer _idleRelease;
+
+    private AudioCaptureOptions _options;
     private ICaptureStream? _stream;
     private CancellationTokenSource? _reconnect;
     private AudioSourceState _state = new(IsOpen: false, IsCapturing: false, DeviceName: null, Error: null);
 
+    private Task _armed = Task.CompletedTask;
     private bool _isCapturing;
     private int _preRollSamples;
     private CaptureStopReason? _latchedStop;
@@ -46,6 +62,7 @@ public sealed class WasapiCapture : IAudioSource
         _options = options ?? new AudioCaptureOptions();
         _preRoll = PreRollBuffer.ForWindow(_options.PreRoll);
         _maxCaptureSamples = AudioFormat.SamplesFor(_options.MaxCaptureDuration);
+        _idleRelease = new Timer(_ => ReleaseIfIdle(), null, Timeout.Infinite, Timeout.Infinite);
 
         // One dictation's worth of headroom, so the steady state never resizes mid-capture.
         _captured = new ArrayBufferWriter<float>(_preRoll.Capacity + AudioFormat.SampleRate * 30);
@@ -66,35 +83,42 @@ public sealed class WasapiCapture : IAudioSource
     /// </summary>
     public event EventHandler<CaptureStopReason>? AutoStopped;
 
+    /// <summary>The options currently in force, after any <see cref="Reconfigure"/>.</summary>
+    public AudioCaptureOptions Options => Volatile.Read(ref _options);
+
+    /// <summary>
+    /// Completes when the device the last <see cref="Arm"/> asked for is live, or has failed.
+    /// </summary>
+    /// <remarks>
+    /// Under <see cref="MicrophoneActivation.WhileDictating"/> arming starts a device open and
+    /// returns without waiting -- the alternative is blocking the hotkey pump on a driver, which
+    /// on a Bluetooth headset can mean the better part of a second. This is how a caller that
+    /// does care, such as a test or a diagnostic, finds out when the microphone is actually
+    /// live. It never faults: an open that fails is reported through <see cref="State"/>.
+    /// </remarks>
+    public Task Armed => Volatile.Read(ref _armed);
+
     public async Task OpenAsync(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        await _openGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
+        // Under WhileDictating there is deliberately nothing to do here. Jane sitting in the tray
+        // must not be holding a capture stream; the device is opened when a key goes down.
+        if (Options.Activation != MicrophoneActivation.AlwaysOpen)
         {
-            if (_stream is not null)
-            {
-                return;
-            }
+            return;
+        }
 
-            await OpenCoreAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (AudioDeviceException error)
-        {
-            Publish(_state with { IsOpen = false, Error = error.Message });
-            StartReconnectLoop();
-            throw;
-        }
-        finally
-        {
-            _openGate.Release();
-        }
+        await OpenGuardedAsync(rethrow: true, cancellationToken).ConfigureAwait(false);
     }
 
     public void Arm()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+
+        // A dictation starting inside the grace window keeps the device it already has, and gets
+        // its pre-roll back as a side effect.
+        _idleRelease.Change(Timeout.Infinite, Timeout.Infinite);
 
         lock (_captureGate)
         {
@@ -107,6 +131,66 @@ public sealed class WasapiCapture : IAudioSource
         }
 
         Publish(_state with { IsCapturing = true });
+
+        if (_stream is null)
+        {
+            // Fire and forget on purpose: this is called from the hotkey pump, which must not
+            // wait on a driver. Samples are retained from the moment the device comes up.
+            Volatile.Write(ref _armed, OpenGuardedAsync(rethrow: false, CancellationToken.None));
+        }
+        else
+        {
+            Volatile.Write(ref _armed, Task.CompletedTask);
+        }
+    }
+
+    /// <summary>
+    /// Changes which microphone is used and when it is held open.
+    /// </summary>
+    /// <remarks>
+    /// Applied to the next dictation rather than to one in flight: pulling the device out from
+    /// under a capture would lose the words already spoken into it, and nobody changes their
+    /// microphone mid-sentence on purpose.
+    /// </remarks>
+    public void Reconfigure(MicrophoneRouting routing)
+    {
+        ArgumentNullException.ThrowIfNull(routing);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        var previous = Options;
+        var updated = previous.With(routing);
+
+        // Every setter in the settings window writes the whole object, so this is called when
+        // something entirely unrelated changes. Without this guard, adjusting the LLM's context
+        // size would let go of a microphone that is sitting warm inside its grace window and make
+        // the next dictation a cold open for no reason.
+        if (updated == previous)
+        {
+            return;
+        }
+
+        Volatile.Write(ref _options, updated);
+
+        if (Volatile.Read(ref _isCapturing))
+        {
+            return;
+        }
+
+        if (routing.Activation == MicrophoneActivation.AlwaysOpen)
+        {
+            if (previous.DeviceId != routing.DeviceId)
+            {
+                Release();
+            }
+
+            _ = OpenGuardedAsync(rethrow: false, CancellationToken.None);
+            return;
+        }
+
+        // Switching to on-demand, or pointing at a different endpoint: let go of whatever is
+        // open so the next dictation opens the right device -- and so a headset the user just
+        // stopped using goes back to stereo now rather than at the next key press.
+        Release();
     }
 
     public CapturedAudio Stop(CaptureStopReason reason)
@@ -133,11 +217,105 @@ public sealed class WasapiCapture : IAudioSource
         }
 
         Publish(_state with { IsCapturing = false });
+        ScheduleIdleRelease();
 
         // A caller saying "released" has no opinion; anything else -- cancelled, too short -- is
         // a deliberate verdict about this dictation and outranks the latch.
         var effective = latched is not null && reason == CaptureStopReason.Released ? latched.Value : reason;
         return new CapturedAudio(samples, preRollSamples, effective, startedAt);
+    }
+
+    private void ScheduleIdleRelease()
+    {
+        if (_disposed || Options.Activation == MicrophoneActivation.AlwaysOpen)
+        {
+            return;
+        }
+
+        var delay = Options.IdleRelease;
+        if (delay <= TimeSpan.Zero)
+        {
+            ReleaseIfIdle();
+            return;
+        }
+
+        _idleRelease.Change(delay, Timeout.InfiniteTimeSpan);
+    }
+
+    /// <summary>
+    /// Lets go of the device, unless a dictation started while the grace window was running.
+    /// </summary>
+    /// <remarks>
+    /// The re-check is the whole point. The release is scheduled when a dictation ends and fires
+    /// several seconds later; by then the user may well be halfway through the next one, and
+    /// closing the stream underneath it would silently truncate what they said.
+    /// </remarks>
+    private void ReleaseIfIdle()
+    {
+        lock (_captureGate)
+        {
+            if (_isCapturing)
+            {
+                return;
+            }
+        }
+
+        if (Options.Activation == MicrophoneActivation.AlwaysOpen)
+        {
+            return;
+        }
+
+        Release();
+    }
+
+    /// <summary>Closes the stream and forgets the audio in the ring, without an error state.</summary>
+    /// <remarks>
+    /// The ring has to be cleared. Retaining it would let audio captured minutes ago, before the
+    /// device was released, arrive as the pre-roll of the next dictation -- a stranger bug to
+    /// diagnose than an empty pre-roll, and a worse one to have in a transcript.
+    /// </remarks>
+    private void Release()
+    {
+        _idleRelease.Change(Timeout.Infinite, Timeout.Infinite);
+
+        if (_stream is null)
+        {
+            return;
+        }
+
+        CloseStream();
+        _preRoll.Clear();
+        Volatile.Write(ref _level, 0f);
+        Publish(_state with { IsOpen = false, Error = null });
+    }
+
+    /// <summary>Opens the device if it is not already open, publishing any failure.</summary>
+    private async Task OpenGuardedAsync(bool rethrow, CancellationToken cancellationToken)
+    {
+        await _openGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_stream is not null || _disposed)
+            {
+                return;
+            }
+
+            await OpenCoreAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (AudioDeviceException error)
+        {
+            Publish(_state with { IsOpen = false, Error = error.Message });
+            StartReconnectLoop();
+
+            if (rethrow)
+            {
+                throw;
+            }
+        }
+        finally
+        {
+            _openGate.Release();
+        }
     }
 
     public async ValueTask DisposeAsync()
@@ -148,6 +326,8 @@ public sealed class WasapiCapture : IAudioSource
         }
 
         _disposed = true;
+        await _idleRelease.DisposeAsync().ConfigureAwait(false);
+
         var reconnect = Interlocked.Exchange(ref _reconnect, null);
         if (reconnect is not null)
         {
@@ -279,7 +459,11 @@ public sealed class WasapiCapture : IAudioSource
 
     private void StartReconnectLoop()
     {
-        if (!_options.AutoReconnect || _disposed)
+        // Never under WhileDictating: a background retry loop would reopen the microphone Jane
+        // just deliberately let go of, which is exactly the state this mode exists to avoid. The
+        // next key press retries, which is the only moment the device is wanted anyway.
+        if (!_options.AutoReconnect || _disposed ||
+            Options.Activation != MicrophoneActivation.AlwaysOpen)
         {
             return;
         }

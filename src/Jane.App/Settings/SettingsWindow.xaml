@@ -175,7 +175,7 @@
                         <TextBlock Style="{StaticResource Display}" Text="Microphone" />
                         <TextBlock Style="{StaticResource Secondary}"
                                    Margin="0,6,0,20"
-                                   Text="Jane opens the microphone in shared mode and keeps it open, so a dictation never waits for a device to start. It never takes the endpoint away from a call." />
+                                   Text="Jane opens the microphone in shared mode and never takes the endpoint away from a call. By default it only opens it while you are actually dictating." />
 
                         <c:SettingsGroup Header="Input device"
                                          Description="Leaving this on the Windows default means swapping headsets re-routes without Jane being told. Naming a device pins it.">
@@ -201,6 +201,46 @@
                                               Severity="Warning"
                                               Description="Windows reports no active capture endpoint. Plug one in and press Refresh, or enable it under Settings, System, Sound, Input. Jane cannot dictate without one."
                                               Visibility="{Binding HasNoMicrophone, Converter={StaticResource BoolToVisibility}}" />
+                            </StackPanel>
+                        </c:SettingsGroup>
+
+                        <c:SettingsGroup Header="When Jane listens"
+                                         Description="Holding the microphone open costs more than an icon on a Bluetooth headset: Windows drops the headset into its narrowband call profile for as long as any app has the mic, and everything you play through it sounds worse until the app lets go.">
+                            <StackPanel>
+                                <c:SettingRow Header="Open the microphone">
+                                    <ComboBox Style="{StaticResource JaneComboBox}"
+                                              MinWidth="300"
+                                              ItemsSource="{Binding Activations}"
+                                              SelectedItem="{Binding MicrophoneActivationChoice}"
+                                              AutomationProperties.AutomationId="MicrophoneActivation"
+                                              AutomationProperties.Name="When Jane opens the microphone" />
+                                </c:SettingRow>
+
+                                <TextBlock Style="{StaticResource Secondary}"
+                                           Margin="0,0,0,12"
+                                           TextWrapping="Wrap"
+                                           Text="{Binding MicrophoneActivationChoice.Description}" />
+
+                                <c:SettingRow Header="Keep it open afterwards"
+                                              Description="Seconds to hold the microphone after a dictation ends. A run of quick dictations then pays the start-up cost once instead of once each, and every one after the first keeps its half-second of pre-roll. Zero releases it immediately."
+                                              Visibility="{Binding IsMicrophoneOnDemand, Converter={StaticResource BoolToVisibility}}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <Slider Style="{StaticResource JaneSlider}"
+                                                Width="220"
+                                                Minimum="0"
+                                                Maximum="60"
+                                                TickFrequency="1"
+                                                Value="{Binding MicrophoneIdleReleaseSeconds}"
+                                                AutomationProperties.AutomationId="MicrophoneIdleRelease"
+                                                AutomationProperties.Name="Seconds to keep the microphone open after a dictation" />
+                                        <TextBlock Style="{StaticResource Mono}"
+                                                   Width="66"
+                                                   Margin="12,0,0,0"
+                                                   VerticalAlignment="Center"
+                                                   TextAlignment="Right"
+                                                   Text="{Binding MicrophoneIdleReleaseSeconds, StringFormat={}{0} s}" />
+                                    </StackPanel>
+                                </c:SettingRow>
                             </StackPanel>
                         </c:SettingsGroup>
                     </StackPanel>
@@ -913,6 +953,28 @@
                                               AutomationProperties.AutomationId="OverlayVisible"
                                               AutomationProperties.Name="Show the floating bar while dictating" />
                                 </c:SettingRow>
+
+                                <c:SettingRow Header="Keep it on screen between dictations"
+                                              Description="A dimmed pill that rests on screen naming the key you hold, and says so when Jane is paused. With it off, the bar only appears once you are already dictating -- which means nothing on screen tells you Jane is running.">
+                                    <CheckBox Style="{StaticResource JaneSwitch}"
+                                              IsChecked="{Binding OverlayShowWhenIdle}"
+                                              AutomationProperties.AutomationId="OverlayShowWhenIdle"
+                                              AutomationProperties.Name="Keep the floating bar on screen between dictations" />
+                                </c:SettingRow>
+
+                                <c:SettingRow Header="Position">
+                                    <ComboBox Style="{StaticResource JaneComboBox}"
+                                              MinWidth="220"
+                                              ItemsSource="{Binding Anchors}"
+                                              SelectedItem="{Binding OverlayAnchorChoice}"
+                                              AutomationProperties.AutomationId="OverlayAnchor"
+                                              AutomationProperties.Name="Where the floating bar sits" />
+                                </c:SettingRow>
+
+                                <TextBlock Style="{StaticResource Secondary}"
+                                           Margin="0,0,0,12"
+                                           TextWrapping="Wrap"
+                                           Text="{Binding OverlayAnchorChoice.Description}" />
 
                                 <c:SettingRow Header="Show the Deep Context indicator"
                                               Description="Marks the moments Jane read the focused window's text, so reading is never invisible.">
