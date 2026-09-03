@@ -230,6 +230,7 @@ public partial class OverlayWindow : Window
         // Only a fallback. The resting pill's real text names the bound hotkey, which this
         // window has no way of knowing -- IdleOverlay builds it and passes it in.
         OverlayState.Ready => "Jane is ready",
+        OverlayState.Connecting => "Connecting...",
         OverlayState.Listening => "Listening",
         OverlayState.Thinking => "Thinking",
         OverlayState.Injecting => "Inserting text",
@@ -243,6 +244,10 @@ public partial class OverlayWindow : Window
         // The same grey the waveform uses for silence. Resting is not a state with news in it,
         // and a coloured dot sitting on screen all day reads as one.
         OverlayState.Ready => JanePalette.WaveformIdle,
+
+        // Not the accent. The accent means "your microphone is live and hearing you", and the
+        // whole point of this state is that it is not yet.
+        OverlayState.Connecting => JanePalette.WaveformIdle,
         OverlayState.Listening => JanePalette.AccentBrush,
         OverlayState.Thinking => JanePalette.ThinkingBrush,
         OverlayState.Injecting => JanePalette.InjectingBrush,

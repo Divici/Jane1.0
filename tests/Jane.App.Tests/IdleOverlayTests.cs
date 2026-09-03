@@ -107,6 +107,53 @@ public sealed class IdleOverlayTests
         Assert.Equal(OverlayState.Idle, status.State);
     }
 
+    // ------------------------------------------------------------------ connecting
+
+    [Fact]
+    public void ListeningIsNotClaimedUntilTheMicrophoneIsActuallyOpen()
+    {
+        // The cause of the clipped first word, and it is a feedback problem rather than an audio
+        // one. With the device opened on key-down, the pill said "Listening" the instant the key
+        // went down -- while the driver was still handing over a stream, which on a Bluetooth
+        // headset means a whole profile renegotiation. So Jane invited the user to speak into a
+        // microphone it did not yet have, and the audio they produced in that window never
+        // existed to be recorded.
+        var live = new OverlayStatus(OverlayState.Listening, "Listening", 0.3f);
+
+        var status = IdleOverlay.For(
+            live, new OverlaySettings(), RightControl, paused: false, microphoneOpen: false);
+
+        Assert.Equal(OverlayState.Connecting, status.State);
+        Assert.Contains("onnecting", status.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ListeningIsClaimedTheMomentTheMicrophoneIsOpen()
+    {
+        var live = new OverlayStatus(OverlayState.Listening, "Listening", 0.3f);
+
+        var status = IdleOverlay.For(
+            live, new OverlaySettings(), RightControl, paused: false, microphoneOpen: true);
+
+        Assert.Same(live, status);
+    }
+
+    [Theory]
+    [InlineData(OverlayState.Thinking)]
+    [InlineData(OverlayState.Injecting)]
+    [InlineData(OverlayState.Error)]
+    public void OnlyListeningWaitsOnTheMicrophone(OverlayState state)
+    {
+        // Everything after the key comes up happens with the device already released, so a closed
+        // microphone says nothing about whether Jane is transcribing or typing.
+        var live = new OverlayStatus(state, "whatever the pipeline said");
+
+        var status = IdleOverlay.For(
+            live, new OverlaySettings(), RightControl, paused: false, microphoneOpen: false);
+
+        Assert.Same(live, status);
+    }
+
     [Fact]
     public void NothingRestsOnScreenUntilTheHotkeyIsActuallyListening()
     {

@@ -42,17 +42,30 @@ public static class IdleOverlay
     /// Ctrl to dictate" a second and a half before holding Right Ctrl did anything would give
     /// exactly the impression it exists to prevent.
     /// </param>
+    /// <param name="microphoneOpen">
+    /// Whether the capture device is actually live. False between key-down and the driver handing
+    /// over a stream, which is where the clipped first word comes from.
+    /// </param>
     public static OverlayStatus For(
         OverlayStatus pipeline,
         OverlaySettings overlay,
         HotkeyBinding binding,
         bool paused,
         bool fullscreen = false,
-        bool ready = true)
+        bool ready = true,
+        bool microphoneOpen = true)
     {
         ArgumentNullException.ThrowIfNull(pipeline);
         ArgumentNullException.ThrowIfNull(overlay);
         ArgumentNullException.ThrowIfNull(binding);
+
+        // Claiming to listen before the microphone exists is what makes people speak into a
+        // device that is not there yet. Only Listening waits: by the time Jane is transcribing or
+        // typing the device has been released again, so a closed microphone means nothing there.
+        if (pipeline.State == OverlayState.Listening && !microphoneOpen)
+        {
+            return new OverlayStatus(OverlayState.Connecting, "Connecting...");
+        }
 
         if (pipeline.State != OverlayState.Idle)
         {

@@ -237,6 +237,17 @@ public sealed class JaneHost : IAsyncDisposable
         RefreshOverlay(Orchestrator.Status);
     }
 
+    private void OnCaptureStateChanged(object? sender, AudioSourceState state)
+    {
+        // Only while a dictation is waiting on the device. Every other capture state change --
+        // the idle release letting go, a reconnect -- happens with nothing on screen that depends
+        // on it, and republishing then would be work for no visible difference.
+        if (Orchestrator.Status.State is PipelineState.Arming or PipelineState.Listening)
+        {
+            RefreshOverlay(Orchestrator.Status);
+        }
+    }
+
     private void PollFullscreen()
     {
         if (_disposed)
@@ -476,6 +487,12 @@ public sealed class JaneHost : IAsyncDisposable
     {
         Orchestrator.StateChanged += OnPipelineStateChanged;
 
+        // The device opening is its own event, not a pipeline transition: under the default
+        // activation the pipeline reaches Arming while the driver is still handing over a stream.
+        // Without this the pill would sit on "Connecting..." until something else happened to
+        // republish it, which for a dictation in progress is not until the key comes up.
+        _capture.StateChanged += OnCaptureStateChanged;
+
         // Applies the stored settings now and on every subsequent write, which is also what puts
         // the resting pill on screen for the first time.
         _live.Attach(Settings2);
@@ -567,7 +584,8 @@ public sealed class JaneHost : IAsyncDisposable
             _binding,
             _paused,
             fullscreen: _screenIsBusy,
-            ready: IsReady));
+            ready: IsReady,
+            microphoneOpen: _capture.State.IsOpen));
     }
 
     public async ValueTask DisposeAsync()
@@ -580,6 +598,7 @@ public sealed class JaneHost : IAsyncDisposable
         _disposed = true;
 
         _hotkeys.HotkeyEvent -= OnHotkeyEvent;
+        _capture.StateChanged -= OnCaptureStateChanged;
         Orchestrator.StateChanged -= OnPipelineStateChanged;
         _live.Dispose();
         _levelPump.Dispose();

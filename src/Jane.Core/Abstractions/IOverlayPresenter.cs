@@ -23,6 +23,20 @@ public enum OverlayState
     /// </remarks>
     Ready,
 
+    /// <summary>
+    /// The key is down and the microphone is still being opened. Speak now and it is lost.
+    /// </summary>
+    /// <remarks>
+    /// Only reachable under <see cref="MicrophoneActivation.WhileDictating"/>, where the device is
+    /// opened on key-down rather than held. That open is not instant -- on a Bluetooth headset it
+    /// is a renegotiation from stereo playback to the hands-free profile, which is hundreds of
+    /// milliseconds -- and audio produced during it was never captured, so no amount of buffering
+    /// can recover it. Saying "Listening" through that window is a lie that costs the user their
+    /// first word; this state is the truth, and the moment it turns into
+    /// <see cref="Listening"/> is the honest cue to start speaking.
+    /// </remarks>
+    Connecting,
+
     /// <summary>Capturing. Shows a live waveform driven by the audio source.</summary>
     Listening,
 
