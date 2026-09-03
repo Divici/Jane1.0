@@ -28,6 +28,15 @@
 
 .EXAMPLE
     ./build/sign-uiaccess.ps1 -Path artifacts\publish\Jane.exe -PfxPath D:\keys\jane-signing.pfx
+
+    First time. Generates a certificate, trusts it, signs, and exports the key.
+
+.EXAMPLE
+    ./build/sign-uiaccess.ps1 -Path artifacts\publish\Jane.exe -PfxPath D:\keys\jane-signing.pfx -ReuseKey
+
+    Every time after that. A new build has to be re-signed because the signature covers the
+    binary; -ReuseKey signs with the certificate the machine already trusts instead of asking it
+    to trust another one.
 #>
 [CmdletBinding()]
 param(
@@ -43,6 +52,14 @@ param(
 
     # Any free RFC-3161 authority, e.g. http://timestamp.digicert.com
     [string]$TimestampUrl,
+
+    # Sign with the key already exported to -PfxPath instead of generating a new certificate.
+    #
+    # This is what you want for every update after the first. The signature covers the binary, so
+    # a new build has to be re-signed; generating a fresh certificate each time would ask the
+    # machine to trust one more self-signed root per update, and each of those roots is a key that
+    # can sign anything at all. Reusing the key keeps that number at one forever.
+    [switch]$ReuseKey,
 
     # Keep the private key in the store. Off by default, and you should leave it off.
     [switch]$KeepPrivateKey,
@@ -78,32 +95,54 @@ if (-not $PfxPath) {
     $PfxPath = Join-Path ([Environment]::GetFolderPath('Desktop')) 'jane-signing-key.pfx'
 }
 
-Write-Host "Generating a code-signing certificate: $Subject"
+if ($ReuseKey) {
+    if (-not (Test-Path $PfxPath)) {
+        throw "-ReuseKey needs the key that was exported when the certificate was created, and there is no file at $PfxPath. Point -PfxPath at it, or drop -ReuseKey to generate a new certificate (which then has to be trusted, in addition to the one already trusted)."
+    }
 
-# TextExtension pins the EKU to code signing only. Without it New-SelfSignedCertificate produces a
-# certificate valid for far more than signing one binary.
-$certificate = New-SelfSignedCertificate `
-    -Subject $Subject `
-    -Type CodeSigningCert `
-    -KeyUsage DigitalSignature `
-    -KeyLength 3072 `
-    -KeyAlgorithm RSA `
-    -HashAlgorithm SHA256 `
-    -CertStoreLocation 'Cert:\CurrentUser\My' `
-    -NotAfter (Get-Date).AddYears($ValidYears) `
-    -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.3')
+    Write-Host "Reusing the code-signing certificate in $PfxPath"
+
+    $password = if ($PfxPassword) { $PfxPassword } else {
+        Read-Host -AsSecureString -Prompt 'Password for the exported private key'
+    }
+
+    # Into CurrentUser\My rather than loaded as an X509Certificate2, because Authenticode signing
+    # on Windows PowerShell 5.1 wants a key with a CSP handle behind it. The finally block at the
+    # bottom removes it again, exactly as it does for a freshly generated one.
+    $certificate = Import-PfxCertificate `
+        -FilePath $PfxPath `
+        -CertStoreLocation 'Cert:\CurrentUser\My' `
+        -Password $password
+} else {
+    Write-Host "Generating a code-signing certificate: $Subject"
+
+    # TextExtension pins the EKU to code signing only. Without it New-SelfSignedCertificate produces
+    # a certificate valid for far more than signing one binary.
+    $certificate = New-SelfSignedCertificate `
+        -Subject $Subject `
+        -Type CodeSigningCert `
+        -KeyUsage DigitalSignature `
+        -KeyLength 3072 `
+        -KeyAlgorithm RSA `
+        -HashAlgorithm SHA256 `
+        -CertStoreLocation 'Cert:\CurrentUser\My' `
+        -NotAfter (Get-Date).AddYears($ValidYears) `
+        -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.3')
+}
 
 $thumbprint = $certificate.Thumbprint
 Write-Host "  thumbprint $thumbprint"
 Write-Host "  EKU        $(($certificate.EnhancedKeyUsageList | ForEach-Object { $_.FriendlyName }) -join ', ')"
 
-# Export the private key BEFORE it is deleted. Losing it means re-signing from a new certificate
-# and re-trusting it, which is survivable but annoying.
-$password = if ($PfxPassword) { $PfxPassword } else {
-    Read-Host -AsSecureString -Prompt 'Password to protect the exported private key'
+if (-not $ReuseKey) {
+    # Export the private key BEFORE it is deleted. Losing it means generating a new certificate and
+    # trusting that one too, which is survivable but leaves two roots where one would do.
+    $password = if ($PfxPassword) { $PfxPassword } else {
+        Read-Host -AsSecureString -Prompt 'Password to protect the exported private key'
+    }
+    Export-PfxCertificate -Cert $certificate -FilePath $PfxPath -Password $password | Out-Null
+    Write-Host "  private key exported to $PfxPath -- move this off this machine"
 }
-Export-PfxCertificate -Cert $certificate -FilePath $PfxPath -Password $password | Out-Null
-Write-Host "  private key exported to $PfxPath -- move this off this machine"
 
 if ($SkipTrustStore) {
     Write-Host '  -SkipTrustStore: machine-wide trust is left untouched, so the signature will not validate'
@@ -152,5 +191,7 @@ Write-Host 'Signed. uiAccess additionally requires the binary to run from a secu
 Write-Host '  ./build/install.ps1'
 Write-Host ''
 if (-not $TimestampUrl) {
-    Write-Warning "No timestamp authority was used, so this signature stops validating on $((Get-Date).AddYears($ValidYears).ToString('yyyy-MM-dd')). Pass -TimestampUrl to avoid that."
+    # The certificate's own expiry, not now-plus-ValidYears: on the -ReuseKey path the certificate
+    # was issued at some point in the past and -ValidYears had nothing to do with it.
+    Write-Warning "No timestamp authority was used, so this signature stops validating on $($certificate.NotAfter.ToString('yyyy-MM-dd')). Pass -TimestampUrl to avoid that."
 }

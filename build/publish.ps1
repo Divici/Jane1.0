@@ -89,3 +89,7 @@ Write-Host 'This binary declares uiAccess="true". Windows will refuse to start i
 Write-Host 'both signed and installed under %ProgramFiles%. Next:'
 Write-Host "  ./build/sign-uiaccess.ps1 -Path '$exe'"
 Write-Host '  ./build/install.ps1'
+Write-Host ''
+Write-Host 'Updating an install you already trust? Sign with the key you exported the first time,'
+Write-Host 'rather than generating and trusting a second self-signed root:'
+Write-Host "  ./build/sign-uiaccess.ps1 -Path '$exe' -PfxPath <your.pfx> -ReuseKey"
