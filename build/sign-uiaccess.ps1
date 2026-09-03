@@ -64,8 +64,11 @@ if (-not (Test-Path $Path)) { throw "Cannot find $Path" }
 $Path = (Resolve-Path $Path).Path
 
 if (-not $SkipTrustStore) {
-    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent())
-        .IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    # One statement, one line. Windows PowerShell 5.1 does not continue an expression onto a line
+    # that begins with ".", so splitting this parses ".IsInRole(...)" as a command name and fails
+    # with "The term '.IsInRole' is not recognized". PowerShell 7 allows it; 5.1 is what ships.
+    $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $isAdmin = (New-Object Security.Principal.WindowsPrincipal($currentIdentity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     if (-not $isAdmin) {
         throw 'This script installs a certificate into the local machine Trusted Root store and must run elevated. Pass -SkipTrustStore to exercise everything except that.'
     }

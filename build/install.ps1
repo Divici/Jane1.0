@@ -28,8 +28,11 @@ Set-StrictMode -Version Latest
 $repoRoot = Split-Path -Parent $PSScriptRoot
 if (-not $Source) { $Source = Join-Path $repoRoot 'artifacts\publish' }
 
-$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent())
-    .IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+# One statement, one line. Windows PowerShell 5.1 does not continue an expression onto a line
+# that begins with ".", so splitting this parses ".IsInRole(...)" as a command name and fails
+# with "The term '.IsInRole' is not recognized". PowerShell 7 allows it; 5.1 is what ships.
+$currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$isAdmin = (New-Object Security.Principal.WindowsPrincipal($currentIdentity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
     throw "Writing to $Destination requires elevation. Re-run this script from an elevated PowerShell."
 }
