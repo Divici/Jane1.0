@@ -4,19 +4,38 @@ namespace Jane.Core.Platform;
 /// Every path Jane writes to, in one place.
 /// </summary>
 /// <remarks>
-/// The root is overridable through <c>JANE_MODEL_DIR</c> and through the constructor so tests
-/// never touch the real profile. Nothing here is created on construction -- probing "is the
-/// model directory writable" must not be the thing that creates it.
+/// <para>
+/// The root is overridable two ways, and it needs both. The constructor argument is what an
+/// in-process test uses. <c>JANE_HOME</c> is what a test that <em>launches Jane</em> uses -- the
+/// idle-footprint measurement starts the real app as a child process, and a child constructs its
+/// own <see cref="JanePaths"/> with no arguments, so without an environment variable it opens the
+/// database belonging to whoever ran the suite, next to their running copy of Jane.
+/// </para>
+/// <para>
+/// <c>JANE_MODEL_DIR</c> is separate and stays separate: model weights are gigabytes, and putting
+/// them on another drive has nothing to do with where the database lives.
+/// </para>
+/// <para>
+/// Nothing here is created on construction -- probing "is the model directory writable" must not
+/// be the thing that creates it.
+/// </para>
 /// </remarks>
 public sealed class JanePaths
 {
     public const string EnvModelDir = "JANE_MODEL_DIR";
 
+    /// <summary>Moves everything Jane writes. The only override that crosses a process boundary.</summary>
+    public const string EnvHome = "JANE_HOME";
+
     public JanePaths(string? root = null, string? modelDirOverride = null)
     {
-        Root = root ?? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "Jane");
+        var envHome = Environment.GetEnvironmentVariable(EnvHome);
+
+        Root = root
+            ?? (string.IsNullOrWhiteSpace(envHome) ? null : Path.GetFullPath(envHome))
+            ?? Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Jane");
 
         var envModelDir = modelDirOverride ?? Environment.GetEnvironmentVariable(EnvModelDir);
         Models = string.IsNullOrWhiteSpace(envModelDir)

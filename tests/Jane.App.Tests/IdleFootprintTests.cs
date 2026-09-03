@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using Jane.Core.Platform;
 
 namespace Jane.App.Tests;
 
@@ -117,6 +118,17 @@ public sealed class IdleFootprintTests
         // Onboarding would open a window, take the foreground, and stop the process being idle --
         // which is the only thing this test measures.
         startInfo.Environment["JANE_SKIP_ONBOARDING"] = "1";
+
+        // A profile of its own. This is a real Jane in a child process, and without this it opens
+        // the database in %LOCALAPPDATA%\Jane -- the settings and history of whoever is running
+        // the suite, very possibly alongside their own running copy of Jane writing to it too.
+        // Passing a root to JanePaths cannot help across a process boundary; only this can.
+        startInfo.Environment[JanePaths.EnvHome] =
+            Path.Combine(Path.GetTempPath(), "jane-idle-tests", Guid.NewGuid().ToString("N"));
+
+        // Model weights are gigabytes and are not what this measures, so the throwaway profile
+        // points at the real ones rather than making the app download them again.
+        startInfo.Environment[JanePaths.EnvModelDir] = new JanePaths().Models;
 
         return Process.Start(startInfo)
             ?? throw new InvalidOperationException("Could not start the Jane process.");
