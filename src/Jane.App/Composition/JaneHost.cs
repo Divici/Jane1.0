@@ -497,6 +497,9 @@ public sealed class JaneHost : IAsyncDisposable
         Orchestrator.StateChanged += (_, status) => _hotkeys.NotifyPipelineActive(Orchestrator.IsActive);
 
         IsReady = true;
+
+        // Now the resting pill can honestly invite a key press.
+        RefreshOverlay(Orchestrator.Status);
     }
 
     /// <summary>Stops the hotkey firing without tearing the graph down.</summary>
@@ -559,7 +562,12 @@ public sealed class JaneHost : IAsyncDisposable
             : 0f;
 
         _overlay.Show(IdleOverlay.For(
-            status.ToOverlayStatus(level), _overlaySettings, _binding, _paused, _screenIsBusy));
+            status.ToOverlayStatus(level),
+            _overlaySettings,
+            _binding,
+            _paused,
+            fullscreen: _screenIsBusy,
+            ready: IsReady));
     }
 
     public async ValueTask DisposeAsync()

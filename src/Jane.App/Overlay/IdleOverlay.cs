@@ -36,12 +36,19 @@ public static class IdleOverlay
     /// yields to it: a dictation somebody deliberately started still shows its status, because
     /// they asked for something to happen and need to see whether it did.
     /// </param>
+    /// <param name="ready">
+    /// Whether the hotkey is actually installed yet. False during startup, where the settings are
+    /// applied before the speech engine loads and the hook goes in -- a pill that said "Hold Right
+    /// Ctrl to dictate" a second and a half before holding Right Ctrl did anything would give
+    /// exactly the impression it exists to prevent.
+    /// </param>
     public static OverlayStatus For(
         OverlayStatus pipeline,
         OverlaySettings overlay,
         HotkeyBinding binding,
         bool paused,
-        bool fullscreen = false)
+        bool fullscreen = false,
+        bool ready = true)
     {
         ArgumentNullException.ThrowIfNull(pipeline);
         ArgumentNullException.ThrowIfNull(overlay);
@@ -52,10 +59,9 @@ public static class IdleOverlay
             return pipeline;
         }
 
-        // The pill is topmost and, since it started resting on screen rather than appearing for
-        // the second and a half of a dictation, it would otherwise sit on top of a game all
-        // evening.
-        if (!overlay.Visible || !overlay.ShowWhenIdle || fullscreen)
+        // Four separate reasons to draw nothing: the user turned the overlay off, the user turned
+        // the resting pill off, something owns the screen, or the hotkey is not listening yet.
+        if (!overlay.Visible || !overlay.ShowWhenIdle || fullscreen || !ready)
         {
             return OverlayStatus.Idle;
         }

@@ -108,6 +108,18 @@ public sealed class IdleOverlayTests
     }
 
     [Fact]
+    public void NothingRestsOnScreenUntilTheHotkeyIsActuallyListening()
+    {
+        // Settings are applied before the speech engine loads and the hook goes in, so for the
+        // second and a half of startup the pill would otherwise be inviting a key press that does
+        // nothing -- which is precisely the impression it exists to prevent.
+        var status = IdleOverlay.For(
+            OverlayStatus.Idle, new OverlaySettings(), RightControl, paused: false, ready: false);
+
+        Assert.Equal(OverlayState.Idle, status.State);
+    }
+
+    [Fact]
     public void ADictationStillShowsItsPillOverAFullscreenApp()
     {
         // Only the resting state yields. Somebody who presses the hotkey during a game has asked
