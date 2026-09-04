@@ -1,4 +1,4 @@
-# Research — Local Aqua Voice Clone (codename: jane1.0)
+﻿# Research — Local Aqua Voice Clone (codename: jane1.0)
 
 Target machine (verified 2026-09-02, lead, confidence H):
 - OS: Windows 11 Pro 10.0.26200
@@ -20,7 +20,7 @@ Target machine (verified 2026-09-02, lead, confidence H):
 
 **Finding: no Python 3.11/3.12/3.13, no conda, no uv.** Only `pythoncore-3.14-64`. · Source: `py -0p` · Gotcha: Python 3.14 is ahead of most ML wheel matrices — any Python-based ASR path likely needs a second interpreter installed (winget/`uv python install 3.12`). · Confidence: H
 
-**Finding: user's sibling project `blueShellSpeech` establishes house conventions.** · Source: `C:\Users\doa92\Desktop\Gauntlet Projects\blueShellSpeech\{README.md,CLAUDE.md,TECH_STACK.md,SYSTEM_DESIGN.md,STUDY_GUIDE.md,DECISIONS.md}` · Key facts: user ships **ASP.NET Core .NET 10** backends and **Next.js 16 + React 19 + TypeScript strict** frontends; monorepo layout `/web /api /docs /infra`; keeps `DECISIONS.md`, `STUDY_GUIDE.md`, `TECH_STACK.md`, `SYSTEM_DESIGN.md`, `WORK_QUEUE.md` at repo root; that project is an Azure-cloud speech→SOAP-note pipeline, **not** reusable code for a local dictation utility. · Gotcha: its stack is cloud/HIPAA-shaped and would be the wrong instinct to copy wholesale here. · Confidence: H
+**Finding: an existing sibling project establishes house conventions.** · Source: a private repository of the author's · Key facts: user ships **ASP.NET Core .NET 10** backends and **Next.js 16 + React 19 + TypeScript strict** frontends; monorepo layout `/web /api /docs /infra`; keeps `DECISIONS.md`, `STUDY_GUIDE.md`, `TECH_STACK.md`, `SYSTEM_DESIGN.md`, `WORK_QUEUE.md` at repo root; that project is an Azure-cloud speech→SOAP-note pipeline, **not** reusable code for a local dictation utility. · Gotcha: its stack is cloud/HIPAA-shaped and would be the wrong instinct to copy wholesale here. · Confidence: H
 
 **Implication for shell choice:** the user has demonstrated fluency in .NET 10 and in TypeScript/Node, and has **neither Rust nor VS Build Tools** installed — a Tauri path adds two toolchain installs that Electron and .NET do not.
 

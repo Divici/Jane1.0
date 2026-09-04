@@ -1,4 +1,4 @@
-# Jane — a fully local Aqua Voice
+﻿# Jane — fully local push-to-talk dictation for Windows
 
 **Mode:** greenfield · **Size:** XL · **Tier:** Deep
 **Research:** `./research.md` (7 researcher angles + 4 lead passes, all sourced)
@@ -92,7 +92,7 @@ Only the findings that changed a decision. Full sourcing in `research.md`.
 ./tools/ollama/ollama.exe pull qwen3:1.7b    # 1.4 GB, CPU-fallback model
 
 # Repo
-cd "C:\Users\doa92\Desktop\Gauntlet Projects\jane1.0"
+cd path\to\jane1.0
 git init && git checkout -b aqua-voice-local-clone
 dotnet new sln -n Jane
 
