@@ -148,13 +148,17 @@ Around 650 tests across four projects, including a real Win32 window that receiv
 UI Automation harness, and an idle-footprint test that launches the app as a child process and
 samples performance counters.
 
-**Quit Jane before running the suite.** Several tests install their own keyboard hook and open the
-capture device, and they contend with a running copy of Jane for both. `Jane.Windows.Tests` in
-particular passes class by class but can block when the whole assembly runs against a live Jane:
+**Run the suite with nothing else competing for the hardware.** Parts of `Jane.Windows.Tests` need
+exclusive use of the microphone, NVML and UI Automation, and they block rather than fail when
+something else holds one. Two things cause that in practice: a running copy of Jane, and two test
+projects running at the same time. Quit Jane first, and run the projects one at a time:
 
 ```powershell
-dotnet run --project src/Jane.Bench -- doctor   # confirms devices are free
+dotnet run --project src/Jane.Bench -- doctor   # confirms the devices are free
 ```
+
+Symptom, if you hit it: a test process sitting at near-zero CPU for minutes. Every class passes on
+its own, so `-class Jane.Windows.Tests.<Name>` is the way through it.
 
 ## Known limitations
 

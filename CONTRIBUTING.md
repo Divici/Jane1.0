@@ -37,6 +37,8 @@ dotnet test
 Some tests touch real audio devices, a real Win32 window and UI Automation, so they need an
 interactive Windows session — they will not pass over SSH or in a container.
 
-**Quit Jane first.** Several tests install their own keyboard hook and open the capture device, and
-a running copy of Jane holds both. `Jane.Windows.Tests` can block partway through the assembly when
-it has to share them; running it class by class is the workaround if you hit that.
+**Nothing else may be competing for the hardware.** Parts of `Jane.Windows.Tests` need exclusive use
+of the microphone, NVML and UI Automation, and they block rather than fail when something else holds
+one — a running copy of Jane, or a second test project going at the same time. Quit Jane, run the
+projects one at a time, and if a process sits at near-zero CPU for minutes, that is what happened.
+Every class passes on its own, so `-class Jane.Windows.Tests.<Name>` gets you through it.
