@@ -45,6 +45,7 @@ public sealed partial class BuildScriptTests
     [InlineData("publish.ps1")]
     [InlineData("sign-uiaccess.ps1")]
     [InlineData("install.ps1")]
+    [InlineData("ship.ps1")]
     public void ScriptParsesUnderWindowsPowerShell(string script)
     {
         var path = PackagingTests.FindRepoFile(Path.Combine("build", script));
@@ -66,6 +67,7 @@ public sealed partial class BuildScriptTests
     [Theory]
     [InlineData("sign-uiaccess.ps1")]
     [InlineData("install.ps1")]
+    [InlineData("ship.ps1")]
     public void NoExpressionIsContinuedOntoALineStartingWithAMemberAccess(string script)
     {
         // Belt and braces alongside the parse check: the parser catches this particular shape, but
@@ -273,5 +275,23 @@ public sealed partial class BuildScriptTests
         {
             return (-1, string.Empty);
         }
+    }
+
+    [Fact]
+    public void ShipRunsPublishSignAndInstallInThatOrder()
+    {
+        // The update path is three commands that always run together, and the one people get
+        // wrong is the middle one: forgetting -ReuseKey generates a fresh self-signed root and
+        // asks the machine to trust one more key that can sign anything at all.
+        var ship = File.ReadAllText(PackagingTests.FindRepoFile(Path.Combine("build", "ship.ps1")));
+
+        var publish = ship.IndexOf("publish.ps1", StringComparison.Ordinal);
+        var sign = ship.IndexOf("sign-uiaccess.ps1", StringComparison.Ordinal);
+        var install = ship.IndexOf("install.ps1", StringComparison.Ordinal);
+
+        Assert.True(publish >= 0 && sign > publish && install > sign,
+            "ship.ps1 must invoke publish, then sign, then install.");
+        Assert.Contains("-ReuseKey", ship, StringComparison.Ordinal);
+        Assert.Contains("JANE_SIGNING_PFX", ship, StringComparison.Ordinal);
     }
 }
