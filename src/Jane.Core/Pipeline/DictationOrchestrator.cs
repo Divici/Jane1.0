@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Jane.Core.Abstractions;
 using Jane.Core.History;
 using Jane.Core.Modes;
+using Jane.Core.Text;
 
 namespace Jane.Core.Pipeline;
 
@@ -16,6 +17,17 @@ public sealed record OrchestratorOptions
     public TimeSpan EngineReadyTimeout { get; init; } = TimeSpan.FromSeconds(8);
 
     public TimeSpan ErrorDisplay { get; init; } = TimeSpan.FromSeconds(3);
+
+    /// <summary>
+    /// Whether consecutive dictations into one window are separated by a space.
+    /// </summary>
+    /// <remarks>
+    /// On, because injecting at the caret and adding nothing produced "Hello there.How are you?"
+    /// for every sentence after the first. Off for anyone dictating into something where Jane's
+    /// idea of a word boundary is wrong -- a code editor with its own completion, say.
+    /// See <see cref="SpacingPolicy"/> for what "separated" means in the awkward cases.
+    /// </remarks>
+    public bool AutoSpace { get; init; } = true;
 }
 
 /// <summary>
@@ -58,6 +70,37 @@ public sealed class DictationOrchestrator : IAsyncDisposable
     private CancellationTokenSource? _cancellation;
     private bool _disposed;
 
+    /// <summary>
+    /// What Jane last put into <see cref="_spacedAgainst"/>, so the next dictation can be spaced
+    /// off it. Set only on a verified injection: text that never arrived is nothing to space from.
+    /// </summary>
+    private string? _lastInjected;
+    private TargetWindow _spacedAgainst = TargetWindow.None;
+
+    /// <summary>
+    /// Whether consecutive dictations into one window are separated by a space.
+    /// </summary>
+    /// <remarks>
+    /// Seeded from <see cref="OrchestratorOptions.AutoSpace"/> and settable afterwards, because
+    /// the settings window has to be able to change it on a running Jane. Everything else in the
+    /// options is a startup timeout, where live change would mean nothing.
+    /// </remarks>
+    public bool AutoSpace { get; set; }
+
+    /// <summary>
+    /// What sits before the caret, as far as Jane can honestly claim to know.
+    /// </summary>
+    /// <remarks>
+    /// Only its own last injection into this very window counts. UIA could in principle be asked,
+    /// but it returns the enclosing paragraph without a caret offset, costs round trips inside an
+    /// 80ms budget, and is refused outright by a good share of the applications people dictate
+    /// into. Returning null means "unknown", and unknown means add nothing.
+    /// </remarks>
+    private string? PrecedingText() =>
+        _lastInjected is not null && !_spacedAgainst.IsNone && _target.MatchesIdentity(_spacedAgainst)
+            ? _lastInjected
+            : null;
+
     public DictationOrchestrator(
         IAudioSource audio,
         ISpeechRecognizer recognizer,
@@ -88,6 +131,7 @@ public sealed class DictationOrchestrator : IAsyncDisposable
         _injector = injector;
         _focus = focus;
         _options = options ?? new OrchestratorOptions();
+        AutoSpace = _options.AutoSpace;
     }
 
     public PipelineStatus Status => Volatile.Read(ref _status);
@@ -350,11 +394,20 @@ public sealed class DictationOrchestrator : IAsyncDisposable
                 return;
             }
 
+            // Edit mode replaces a selection rather than appending at a caret, so a separator
+            // there would land inside the rewritten span.
+            if (AutoSpace && mode.Mode != DictationModeKind.Edit)
+            {
+                text = SpacingPolicy.Apply(text, PrecedingText());
+            }
+
             Transition(new PipelineStatus(PipelineState.Injecting));
             var injection = await _injector.InjectAsync(text, _target, cancellationToken);
 
             if (!injection.Succeeded)
             {
+                // Deliberately not remembered: nothing reached the window, so the next dictation
+                // has nothing to be spaced from.
                 Fail(PipelineFailure.InjectionAborted,
                     injection.Detail ?? PipelineStatus.DefaultMessageFor(PipelineFailure.InjectionAborted));
                 return;
@@ -362,6 +415,11 @@ public sealed class DictationOrchestrator : IAsyncDisposable
 
             // Only now. Submitting a form that never received the text is worse than not
             // submitting, so the Enter waits on a verified injection.
+            // A submitted dictation is gone from the box it was typed into, so the next one has
+            // nothing on screen to be spaced from.
+            _lastInjected = submit ? null : text;
+            _spacedAgainst = submit ? TargetWindow.None : _target;
+
             if (submit && _submitter is not null)
             {
                 await _submitter.SubmitAsync(_target, cancellationToken);
@@ -511,4 +569,5 @@ public sealed class PassthroughFormatter : ITranscriptFormatter
 {
     public Task<string> FormatAsync(string transcript, FormattingContext context, CancellationToken cancellationToken) =>
         Task.FromResult(transcript);
+
 }

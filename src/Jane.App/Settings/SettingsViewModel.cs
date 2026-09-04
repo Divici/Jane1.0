@@ -640,6 +640,29 @@ public sealed class SettingsViewModel : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>
+    /// Whether a dictation that follows another into the same window is spaced off it.
+    /// </summary>
+    /// <remarks>
+    /// A setting rather than a fixed rule because Jane's idea of a word boundary is occasionally
+    /// wrong -- a code editor driving its own completion is the case people hit -- and because the
+    /// person switching it off has just watched a space land where they did not want one.
+    /// </remarks>
+    public bool AutoSpace
+    {
+        get => _current.Text.AutoSpace;
+        set
+        {
+            if (value == _current.Text.AutoSpace)
+            {
+                return;
+            }
+
+            Persist(s => s with { Text = s.Text with { AutoSpace = value } });
+            Raise();
+        }
+    }
+
     /// <summary>Whether the pill rests on screen between dictations, naming the hotkey.</summary>
     public bool OverlayShowWhenIdle
     {

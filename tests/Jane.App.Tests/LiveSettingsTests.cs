@@ -30,13 +30,28 @@ public sealed class LiveSettingsTests
     private const int VkF13 = 0x7C;
 
     [Fact]
+    public void ATextSettingsChangeReachesTheRunningPipeline()
+    {
+        using var hotkeys = new LowLevelKeyboardHook(HotkeyBinding.Default, HotkeyMode.Hold);
+        var microphone = new RecordingAudioSource();
+        var seen = new List<TextSettings>();
+        using var live = new LiveSettings(hotkeys, microphone, _ => { }, seen.Add);
+
+        live.Apply(new JaneSettings { Text = new TextSettings(AutoSpace: false) });
+
+        // Somebody turning automatic spacing off has just watched Jane put a space where they did
+        // not want one. Making them restart to find out whether it helped is the wrong answer.
+        Assert.False(Assert.Single(seen).AutoSpace);
+    }
+
+    [Fact]
     public void ChangingTheHotkeyReachesTheRunningListener()
     {
         // The user's report, reduced: bind Right Alt, and Jane must be listening for Right Alt
         // without being restarted.
         using var hotkeys = new LowLevelKeyboardHook(HotkeyBinding.Default, HotkeyMode.Hold);
         var microphone = new RecordingAudioSource();
-        using var live = new LiveSettings(hotkeys, microphone, _ => { });
+        using var live = new LiveSettings(hotkeys, microphone, _ => { }, _ => { });
 
         live.Apply(new JaneSettings { Hotkey = new HotkeySettings(VirtualKey: VkRightAlt) });
 
@@ -51,7 +66,7 @@ public sealed class LiveSettingsTests
         // validator approved.
         using var hotkeys = new LowLevelKeyboardHook(HotkeyBinding.Default, HotkeyMode.Hold);
         var microphone = new RecordingAudioSource();
-        using var live = new LiveSettings(hotkeys, microphone, _ => { });
+        using var live = new LiveSettings(hotkeys, microphone, _ => { }, _ => { });
 
         live.Apply(new JaneSettings
         {
@@ -69,7 +84,7 @@ public sealed class LiveSettingsTests
         // into HotkeyOptions at construction and the slider in settings moved nothing.
         using var hotkeys = new LowLevelKeyboardHook(HotkeyBinding.Default, HotkeyMode.Hold);
         var microphone = new RecordingAudioSource();
-        using var live = new LiveSettings(hotkeys, microphone, _ => { });
+        using var live = new LiveSettings(hotkeys, microphone, _ => { }, _ => { });
 
         live.Apply(new JaneSettings
         {
@@ -85,7 +100,7 @@ public sealed class LiveSettingsTests
     {
         using var hotkeys = new LowLevelKeyboardHook(HotkeyBinding.Default, HotkeyMode.Hold);
         var microphone = new RecordingAudioSource();
-        using var live = new LiveSettings(hotkeys, microphone, _ => { });
+        using var live = new LiveSettings(hotkeys, microphone, _ => { }, _ => { });
 
         live.Apply(new JaneSettings
         {
@@ -105,7 +120,7 @@ public sealed class LiveSettingsTests
         using var jane = new TempJane();
         using var hotkeys = new LowLevelKeyboardHook(HotkeyBinding.Default, HotkeyMode.Hold);
         var microphone = new RecordingAudioSource();
-        using var live = new LiveSettings(hotkeys, microphone, _ => { });
+        using var live = new LiveSettings(hotkeys, microphone, _ => { }, _ => { });
 
         live.Attach(jane.Settings);
 
@@ -122,7 +137,7 @@ public sealed class LiveSettingsTests
         using var jane = new TempJane();
         using var hotkeys = new LowLevelKeyboardHook(HotkeyBinding.Default, HotkeyMode.Hold);
         var microphone = new RecordingAudioSource();
-        var live = new LiveSettings(hotkeys, microphone, _ => { });
+        var live = new LiveSettings(hotkeys, microphone, _ => { }, _ => { });
 
         live.Attach(jane.Settings);
         live.Dispose();
@@ -140,7 +155,7 @@ public sealed class LiveSettingsTests
         using var hotkeys = new LowLevelKeyboardHook(HotkeyBinding.Default, HotkeyMode.Hold);
         var microphone = new RecordingAudioSource();
         var seen = new List<OverlaySettings>();
-        using var live = new LiveSettings(hotkeys, microphone, seen.Add);
+        using var live = new LiveSettings(hotkeys, microphone, seen.Add, _ => { });
 
         live.Apply(new JaneSettings { Overlay = new OverlaySettings(Visible: false) });
 
@@ -255,4 +270,5 @@ public sealed class LiveSettingsTests
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
+
 }

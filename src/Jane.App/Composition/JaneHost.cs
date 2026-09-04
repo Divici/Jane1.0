@@ -113,7 +113,7 @@ public sealed class JaneHost : IAsyncDisposable
 
         // One wire from the settings database to everything in this graph that holds a copy of a
         // setting. Anything not on it is a control that writes a row and changes nothing.
-        _live = new LiveSettings(hotkeys, capture, OnOverlaySettingsChanged);
+        _live = new LiveSettings(hotkeys, capture, OnOverlaySettingsChanged, OnTextSettingsChanged);
 
         _fullscreenPoll = new Timer(_ => PollFullscreen(), null, Timeout.Infinite, Timeout.Infinite);
     }
@@ -211,6 +211,16 @@ public sealed class JaneHost : IAsyncDisposable
             s => s with { Overlay = s.Overlay with { Visible = visible } },
             CancellationToken.None);
 
+    /// <summary>
+    /// Applies a text-shaping change to the running pipeline.
+    /// </summary>
+    /// <remarks>
+    /// Live rather than restart-gated: somebody turning automatic spacing off is doing it because
+    /// Jane just put a space where they did not want one, and asking them to restart to find out
+    /// whether that helped is the wrong shape of answer.
+    /// </remarks>
+    private void OnTextSettingsChanged(TextSettings text) =>
+        Orchestrator.AutoSpace = text.AutoSpace;
     private void OnOverlaySettingsChanged(OverlaySettings overlay)
     {
         _overlaySettings = overlay;
@@ -400,7 +410,7 @@ public sealed class JaneHost : IAsyncDisposable
             formatter,
             injector,
             focus,
-            options: null,
+            new OrchestratorOptions { AutoSpace = current.Text.AutoSpace },
             contextSource,
             llm is null
                 ? UnavailableRewriter.Instance

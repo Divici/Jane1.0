@@ -13,7 +13,7 @@ internal sealed class Harness
 {
     private readonly List<PipelineState> _states = [];
 
-    public Harness()
+    public Harness(OrchestratorOptions? options = null)
     {
         Source = new FakeAudioSource();
         Recognizer = new FakeRecognizer(this);
@@ -28,7 +28,7 @@ internal sealed class Harness
 
         Orchestrator = new DictationOrchestrator(
             Source, Recognizer, Vad, Formatter, Injector, Focus,
-            new OrchestratorOptions { EngineReadyTimeout = TimeSpan.FromSeconds(10) },
+            (options ?? new OrchestratorOptions()) with { EngineReadyTimeout = TimeSpan.FromSeconds(10) },
             ContextSource,
             new FakeRewriter(this),
             Submitter);

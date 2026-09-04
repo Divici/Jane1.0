@@ -1,4 +1,4 @@
-<Window x:Class="Jane.App.Settings.SettingsWindow"
+﻿<Window x:Class="Jane.App.Settings.SettingsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:c="clr-namespace:Jane.App.Controls"
@@ -458,6 +458,19 @@
                                                    TextAlignment="Right"
                                                    Text="{Binding IdleUnloadSeconds, StringFormat={}{0} s}" />
                                     </StackPanel>
+                                </c:SettingRow>
+                            </StackPanel>
+                        </c:SettingsGroup>
+
+                        <c:SettingsGroup Header="Spacing"
+                                         Description="Jane types at the cursor and adds nothing of its own, which is right for the first dictation and wrong for the second.">
+                            <StackPanel>
+                                <c:SettingRow Header="Separate consecutive dictations"
+                                              Description="Puts a space in front of a dictation that follows another into the same window, so pausing mid-thought does not produce &quot;Hello there.How are you?&quot;. Jane leaves the text alone wherever it cannot be sure -- a different window, the first dictation of a session, or text that starts with punctuation.">
+                                    <CheckBox Style="{StaticResource JaneSwitch}"
+                                              IsChecked="{Binding AutoSpace}"
+                                              AutomationProperties.AutomationId="AutoSpace"
+                                              AutomationProperties.Name="Separate consecutive dictations with a space" />
                                 </c:SettingRow>
                             </StackPanel>
                         </c:SettingsGroup>

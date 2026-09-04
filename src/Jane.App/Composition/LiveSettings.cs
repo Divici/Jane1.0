@@ -32,6 +32,7 @@ public sealed class LiveSettings : IDisposable
     private readonly IHotkeyListener _hotkeys;
     private readonly IAudioSource _microphone;
     private readonly Action<OverlaySettings> _overlay;
+    private readonly Action<TextSettings> _text;
 
     private SettingsRepository? _repository;
     private bool _disposed;
@@ -39,15 +40,18 @@ public sealed class LiveSettings : IDisposable
     public LiveSettings(
         IHotkeyListener hotkeys,
         IAudioSource microphone,
-        Action<OverlaySettings> overlay)
+        Action<OverlaySettings> overlay,
+        Action<TextSettings> text)
     {
         ArgumentNullException.ThrowIfNull(hotkeys);
         ArgumentNullException.ThrowIfNull(microphone);
         ArgumentNullException.ThrowIfNull(overlay);
+        ArgumentNullException.ThrowIfNull(text);
 
         _hotkeys = hotkeys;
         _microphone = microphone;
         _overlay = overlay;
+        _text = text;
     }
 
     /// <summary>
@@ -98,6 +102,7 @@ public sealed class LiveSettings : IDisposable
 
         _microphone.Reconfigure(settings.Routing);
         _overlay(settings.Overlay);
+        _text(settings.Text);
     }
 
     public void Dispose()

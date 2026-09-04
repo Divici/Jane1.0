@@ -108,6 +108,17 @@ public sealed record OverlaySettings(
     bool ShowWhenIdle = true,
     OverlayAnchor Anchor = OverlayAnchor.BottomCentre);
 
+/// <summary>
+/// How Jane shapes the text it types, as opposed to what the words are.
+/// </summary>
+/// <param name="AutoSpace">
+/// Whether a dictation that follows another into the same window is separated from it by a space.
+/// On, because injecting at the caret and adding nothing produced "Hello there.How are you?" for
+/// every sentence after the first. Off suits anyone dictating somewhere Jane's idea of a word
+/// boundary is wrong -- a code editor driving its own completion, say.
+/// </param>
+public sealed record TextSettings(bool AutoSpace = true);
+
 /// <param name="MinimumFreeVramBytes">
 /// Below this, the GPU counts as contended even with no game detected. Loading a 2.5 GB model
 /// into the last of someone's VRAM is how you cause a stutter in something else.
@@ -143,6 +154,8 @@ public sealed record JaneSettings
     public GpuSettings Gpu { get; init; } = new();
 
     public MicrophoneSettings Microphone { get; init; } = new();
+
+    public TextSettings Text { get; init; } = new();
 
     /// <summary>Empty means "use the Windows default communications input".</summary>
     public string? MicrophoneDeviceId { get; init; }

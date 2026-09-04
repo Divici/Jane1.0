@@ -390,4 +390,56 @@ public sealed class OrchestratorTests
 
         Assert.Equal(1, harness.ContextSource.CollectCount);
     }
+
+    [Fact]
+    public async Task ASecondDictationIntoTheSameWindowIsSpacedFromTheFirst()
+    {
+        var harness = new Harness();
+
+        await harness.DictateAsync("Hello there.");
+        await harness.DictateAsync("How are you?");
+
+        // The bug this exists for produced "Hello there.How are you?" -- every sentence after the
+        // first glued to its predecessor, in a tool whose point is not touching the keyboard.
+        Assert.Equal(["Hello there.", " How are you?"], harness.Injector.Injected);
+    }
+
+    [Fact]
+    public async Task MovingToADifferentWindowStartsCleanAgain()
+    {
+        var harness = new Harness();
+
+        await harness.DictateAsync("Hello there.");
+        harness.Focus.Current = new TargetWindow(9, 9, "chrome", "Chrome", "New tab");
+        await harness.DictateAsync("How are you?");
+
+        // Jane knows what it typed into Notepad; it knows nothing about where the caret sits in
+        // Chrome, and a leading space in an empty search box is its own bug.
+        Assert.Equal(["Hello there.", "How are you?"], harness.Injector.Injected);
+    }
+
+    [Fact]
+    public async Task AFailedInjectionIsNotRememberedAsPrecedingText()
+    {
+        var harness = new Harness();
+        harness.Injector.Result = InjectionResult.Aborted(InjectionFailure.TargetChanged, "focus moved");
+
+        await harness.DictateAsync("Hello there.");
+        harness.Injector.Result = null;
+        await harness.DictateAsync("How are you?");
+
+        // Nothing reached the window the first time, so there is nothing to be spaced from.
+        Assert.Equal("How are you?", harness.Injector.Injected[^1]);
+    }
+
+    [Fact]
+    public async Task AutomaticSpacingCanBeTurnedOff()
+    {
+        var harness = new Harness(new OrchestratorOptions { AutoSpace = false });
+
+        await harness.DictateAsync("Hello there.");
+        await harness.DictateAsync("How are you?");
+
+        Assert.Equal(["Hello there.", "How are you?"], harness.Injector.Injected);
+    }
 }
