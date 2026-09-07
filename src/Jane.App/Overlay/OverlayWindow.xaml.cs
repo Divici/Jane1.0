@@ -50,10 +50,32 @@ public partial class OverlayWindow : Window
     /// <summary>~30 fps. Fast enough to read as motion, slow enough to be invisible in a profile.</summary>
     private static readonly TimeSpan WaveformInterval = TimeSpan.FromMilliseconds(33);
 
+    /// <summary>
+    /// How often the resting pill checks whether the pointer is over it.
+    /// </summary>
+    /// <remarks>
+    /// Ten times a second. Fast enough that the reveal feels attached to the pointer, slow enough
+    /// that an app whose entire pitch is costing nothing while idle is not polling the cursor at
+    /// frame rate to decide whether to draw six words.
+    /// </remarks>
+    private static readonly TimeSpan HoverInterval = TimeSpan.FromMilliseconds(100);
+
     private static readonly IEasingFunction Ease = CreateEase();
 
     private readonly DispatcherTimer _waveformPump;
     private readonly DispatcherTimer _hideTimer;
+
+    /// <summary>
+    /// Polls where the pointer is while the pill is resting.
+    /// </summary>
+    /// <remarks>
+    /// A timer rather than mouse events, because the overlay is <c>WS_EX_TRANSPARENT</c> and
+    /// receives none. It runs only while resting: during a dictation the text is shown regardless,
+    /// so there would be nothing for a tick to decide.
+    /// </remarks>
+    private readonly DispatcherTimer _hoverPoll;
+
+    private bool _hovered;
 
     private OverlayStatus _status = OverlayStatus.Idle;
     private OverlayAnchor _anchor = OverlayAnchor.BottomCentre;
@@ -72,6 +94,9 @@ public partial class OverlayWindow : Window
         // leaves an idle overlay genuinely hidden.
         _hideTimer = new DispatcherTimer(DispatcherPriority.Normal, Dispatcher) { Interval = HideDuration };
         _hideTimer.Tick += OnHideElapsed;
+
+        _hoverPoll = new DispatcherTimer(DispatcherPriority.Background, Dispatcher) { Interval = HoverInterval };
+        _hoverPoll.Tick += OnHoverTick;
 
         _ = new WindowInteropHelper(this).EnsureHandle();
 
@@ -124,6 +149,11 @@ public partial class OverlayWindow : Window
 
         if (status.State == OverlayState.Idle)
         {
+            // Before the early return, or a hidden pill goes on polling the cursor forever -- and
+            // comes back from the next Show already believing it is being pointed at.
+            _hoverPoll.Stop();
+            _hovered = false;
+
             BeginHide();
             return;
         }
@@ -195,6 +225,7 @@ public partial class OverlayWindow : Window
     {
         _waveformPump.Stop();
         _hideTimer.Stop();
+        _hoverPoll.Stop();
         base.OnClosed(e);
     }
 
@@ -256,9 +287,56 @@ public partial class OverlayWindow : Window
         _ => JanePalette.WaveformIdle,
     };
 
+    /// <summary>
+    /// Checks whether the pointer has moved onto or off the resting pill.
+    /// </summary>
+    /// <remarks>
+    /// Redraws only on a change. The pointer spends almost all of its time not over a small pill
+    /// at the bottom of the screen, so the common tick has to cost a cursor read and a comparison
+    /// and nothing else.
+    /// </remarks>
+    private void OnHoverTick(object? sender, EventArgs e)
+    {
+        var cursor = OverlayInterop.CursorPosition();
+        var hovered = cursor is { } point
+            && RestingPill.Covers(OverlayInterop.WindowRect(_handle), point.X, point.Y);
+
+        if (hovered == _hovered)
+        {
+            return;
+        }
+
+        _hovered = hovered;
+        UpdateVisuals(_status);
+
+        // Revealing the words makes the pill wider, and the anchor is computed from its size.
+        CrossfadeContent();
+    }
+
     private void UpdateVisuals(OverlayStatus status)
     {
         StatusText.Text = AccessibleStatusText;
+
+        // At rest the pill is a mark and nothing more; the words are earned by pointing at it.
+        // Collapsed rather than transparent so the pill actually shrinks around the dot instead of
+        // leaving a wide empty lozenge over the user's work.
+        StatusText.Visibility = RestingPill.ShowsText(status, _hovered)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
+        // Only the resting pill has anything to poll for. Everything else shows its text outright.
+        if (status.State == OverlayState.Ready)
+        {
+            if (!_hoverPoll.IsEnabled)
+            {
+                _hoverPoll.Start();
+            }
+        }
+        else
+        {
+            _hoverPoll.Stop();
+            _hovered = false;
+        }
 
         var accent = BrushFor(status.State);
         StateDot.Fill = accent;

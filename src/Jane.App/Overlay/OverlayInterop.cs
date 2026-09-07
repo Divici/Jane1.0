@@ -59,6 +59,18 @@ internal static partial class OverlayInterop
     internal static PixelRect WindowRect(nint handle) =>
         GetWindowRect(handle, out var rect) ? ToPixelRect(rect) : default;
 
+    /// <summary>
+    /// Where the pointer is, in physical pixels on the virtual desktop.
+    /// </summary>
+    /// <remarks>
+    /// The overlay is <c>WS_EX_TRANSPARENT</c> so that clicks pass through to the window
+    /// underneath, which also means it is sent no mouse messages and can raise no mouse events.
+    /// Asking where the cursor is, and comparing, is how the pill knows it is being pointed at
+    /// without giving up the click-through that makes it safe to float over someone's work.
+    /// </remarks>
+    internal static PixelPoint? CursorPosition() =>
+        GetCursorPos(out var point) ? new PixelPoint(point.X, point.Y) : null;
+
     /// <summary>Physical pixels per device-independent unit for the monitor this window is on.</summary>
     internal static double DpiScale(nint handle)
     {
@@ -154,6 +166,10 @@ internal static partial class OverlayInterop
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool GetWindowRect(nint hWnd, out NativeRect rect);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetCursorPos(out NativePoint point);
 
     [LibraryImport("user32.dll")]
     private static partial nint MonitorFromWindow(nint hWnd, uint flags);
