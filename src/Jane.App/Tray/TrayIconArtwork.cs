@@ -30,6 +30,17 @@ internal static class TrayIconArtwork
 {
     private static readonly int[] Sizes = [16, 20, 24, 32, 48, 64];
 
+    /// <summary>
+    /// The size set for the executable's own icon, written to <c>jane.ico</c>.
+    /// </summary>
+    /// <remarks>
+    /// Everything the tray needs, plus 128 and 256 for Explorer's large and extra-large views and
+    /// the Alt-Tab switcher. The tray never asks for those, which is why they are not in
+    /// <see cref="Sizes"/> -- rendering a 256px icon on every start-up to satisfy a 16px tray slot
+    /// is work nobody sees.
+    /// </remarks>
+    internal static readonly int[] ApplicationSizes = [16, 20, 24, 32, 48, 64, 128, 256];
+
     /// <summary>Relative bar heights, centred -- a waveform read left to right.</summary>
     private static readonly double[] Bars = [0.36, 0.66, 1.0, 0.66, 0.36];
 
@@ -54,6 +65,17 @@ internal static class TrayIconArtwork
 
         return new Icon(stream);
     }
+
+    /// <summary>
+    /// Writes a complete .ico for the given sizes.
+    /// </summary>
+    /// <remarks>
+    /// Exposed so the committed <c>jane.ico</c> -- the executable's icon, which MSBuild needs as a
+    /// file at compile time and therefore cannot be generated in memory -- comes out of this same
+    /// drawing code. A test regenerates it and compares, so the file on disk cannot quietly drift
+    /// away from the tray icon it is supposed to match.
+    /// </remarks>
+    internal static void Write(Stream stream, int[] sizes) => WriteIconFile(stream, sizes);
 
     private static void WriteIconFile(Stream stream, int[] sizes)
     {
