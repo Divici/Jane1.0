@@ -162,7 +162,7 @@ public sealed partial class BuildScriptTests
             Assert.Equal(thumbprints, Thumbprints(reuseOutput));
 
             // And it did not quietly mint a replacement on the way.
-            Assert.DoesNotContain("Generating a code-signing certificate", reuseOutput, StringComparison.Ordinal);
+            Assert.DoesNotContain("Generating a code-signing certificate", reuseOutput);
         }
         finally
         {
@@ -283,15 +283,26 @@ public sealed partial class BuildScriptTests
         // The update path is three commands that always run together, and the one people get
         // wrong is the middle one: forgetting -ReuseKey generates a fresh self-signed root and
         // asks the machine to trust one more key that can sign anything at all.
-        var ship = File.ReadAllText(PackagingTests.FindRepoFile(Path.Combine("build", "ship.ps1")));
+        var ship = File.ReadAllLines(PackagingTests.FindRepoFile(Path.Combine("build", "ship.ps1")));
 
-        var publish = ship.IndexOf("publish.ps1", StringComparison.Ordinal);
-        var sign = ship.IndexOf("sign-uiaccess.ps1", StringComparison.Ordinal);
-        var install = ship.IndexOf("install.ps1", StringComparison.Ordinal);
+        // Only the lines that actually run something. Searching the whole file finds
+        // sign-uiaccess.ps1 in the -PfxPath documentation, seventy lines above the first line of
+        // code, and concludes that signing happens before publishing.
+        var invoked = ship
+            .Where(line => line.TrimStart().StartsWith("& (Join-Path", StringComparison.Ordinal))
+            .Select(line => line.Trim())
+            .ToList();
 
-        Assert.True(publish >= 0 && sign > publish && install > sign,
-            "ship.ps1 must invoke publish, then sign, then install.");
-        Assert.Contains("-ReuseKey", ship, StringComparison.Ordinal);
-        Assert.Contains("JANE_SIGNING_PFX", ship, StringComparison.Ordinal);
+        Assert.Collection(
+            invoked,
+            publish => Assert.Contains("publish.ps1", publish),
+            sign => Assert.Contains("sign-uiaccess.ps1", sign),
+            install => Assert.Contains("install.ps1", install));
+
+        // -ReuseKey has to be on the signing call itself, not merely mentioned somewhere in the
+        // file: the whole risk is invoking sign-uiaccess.ps1 without it and minting another root.
+        Assert.Contains("-ReuseKey", invoked[1]);
+
+        Assert.Contains(ship, line => line.Contains("JANE_SIGNING_PFX", StringComparison.Ordinal));
     }
 }

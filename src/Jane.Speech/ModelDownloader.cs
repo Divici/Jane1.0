@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using ICSharpCode.SharpZipLib.BZip2;
 using ICSharpCode.SharpZipLib.Tar;
@@ -22,6 +23,18 @@ public enum ModelDownloadFailure
 
     /// <summary>The archive downloaded and verified but could not be unpacked.</summary>
     ExtractionFailed,
+
+    /// <summary>
+    /// Nothing was listening where a local service should have been.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from <see cref="HttpError"/> because the two need opposite advice. An HTTP failure
+    /// is a remote host that could not serve a file, and retrying is reasonable. A refused
+    /// connection to loopback is a service on this machine that is not running, where retrying
+    /// fails identically forever -- which is what onboarding did, reporting "the release asset may
+    /// have moved" for an Ollama that had simply never been started.
+    /// </remarks>
+    ServiceUnreachable,
 }
 
 public sealed class ModelDownloadException(ModelDownloadFailure failure, string message, Exception? inner = null)
@@ -42,8 +55,47 @@ public sealed class ModelDownloadException(ModelDownloadFailure failure, string 
             "There is not enough free space to finish. Free up a few GB, or point JANE_MODEL_DIR at a drive that has room.",
         ModelDownloadFailure.ExtractionFailed =>
             "The archive verified but could not be unpacked. Delete the model directory and retry.",
+        ModelDownloadFailure.ServiceUnreachable =>
+            "Jane's language-model service is not running, so there is nothing to pull the model into. Run build/get-ollama.ps1 to fetch the standalone ollama.exe -- Jane supervises its own copy on port 11435 and ignores any Ollama desktop app on 11434. Retrying the download alone will not help.",
         _ => "Retry the download.",
     };
+
+    /// <summary>
+    /// Wraps an exception the provisioner did not classify, working out what it actually was.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Everything unrecognised used to become <see cref="ModelDownloadFailure.HttpError"/>, whose
+    /// remedy says the release asset may have moved. Onboarding printed exactly that under a row
+    /// whose own error text read <c>the target machine actively refused it (127.0.0.1:11435)</c> --
+    /// Jane's own language-model service, on Jane's own port, never started. Sending somebody to
+    /// retry a download that cannot succeed is worse than saying nothing, because it looks like an
+    /// answer.
+    /// </para>
+    /// <para>
+    /// Loopback is the distinguishing detail and it is checked through the socket error rather than
+    /// the address, since the address is not always on the exception. A refusal means nothing is
+    /// listening; a timeout or an unresolved host is the network, and the existing remedies already
+    /// describe those correctly.
+    /// </para>
+    /// </remarks>
+    public static ModelDownloadException FromUnclassified(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+
+        if (exception is ModelDownloadException already)
+        {
+            return already;
+        }
+
+        var refused = exception is SocketException { SocketErrorCode: SocketError.ConnectionRefused }
+            || exception.InnerException is SocketException { SocketErrorCode: SocketError.ConnectionRefused };
+
+        return new ModelDownloadException(
+            refused ? ModelDownloadFailure.ServiceUnreachable : ModelDownloadFailure.HttpError,
+            exception.Message,
+            exception);
+    }
 }
 
 /// <param name="BytesDownloaded">Includes bytes already on disk from a resumed partial download.</param>

@@ -258,8 +258,11 @@ public sealed class ModelRow : ObservableObject
         catch (Exception ex)
         {
             // Anything the provisioner did not classify still has to reach the user as a remedy
-            // rather than as a stack trace, so it is wrapped rather than rethrown.
-            Error = new ModelDownloadException(ModelDownloadFailure.HttpError, ex.Message, ex);
+            // rather than as a stack trace, so it is wrapped rather than rethrown. Not as an
+            // HttpError outright: a refused loopback connection is Jane's own language-model
+            // service being absent, and telling somebody the release asset may have moved sends
+            // them to retry a download that cannot ever succeed.
+            Error = ModelDownloadException.FromUnclassified(ex);
             IsInstalled = false;
         }
         finally
