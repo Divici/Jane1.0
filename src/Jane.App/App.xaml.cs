@@ -34,6 +34,7 @@ public partial class App : Application
     private OverlayPresenter? _overlay;
     private JaneHost? _host;
     private WindowLauncher? _windows;
+    private SingleInstance? _instance;
 
     /// <summary>The tray's command surface.</summary>
     public ITrayCommands? Tray => _tray;
@@ -45,6 +46,25 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        // Before anything that touches the keyboard, the microphone or the screen. A second Jane
+        // installs a second hook on the same key, opens the same capture device against the first,
+        // and draws a second pill over the first one -- which is how this was found, as a resting
+        // pill with two different strings rendered on top of each other.
+        _instance = SingleInstance.Acquire();
+        if (!_instance.IsOwner)
+        {
+            // Tell the copy that is already running, so it can surface itself. Exiting in silence
+            // is indistinguishable from the launch having done nothing, which is what makes
+            // somebody click the icon another four times.
+            _instance.NotifyOwner();
+            _instance.Dispose();
+            _instance = null;
+            Shutdown();
+            return;
+        }
+
+        _instance.SecondInstanceAttempted += OnSecondInstanceAttempted;
 
         // The overlay's HWND is created here rather than on first dictation: building a window
         // costs a few milliseconds, and the hotkey's budget from key-down to armed is 50 ms.
@@ -109,8 +129,23 @@ public partial class App : Application
         _tray?.Dispose();
         _overlay?.Dispose();
 
+        // Last: the name has to outlive everything it protects, or a launch during teardown gets
+        // in and starts hooking the keyboard while this copy is still unhooking it.
+        _instance?.Dispose();
+
         base.OnExit(e);
     }
+
+    /// <summary>
+    /// Another copy of Jane tried to start. Show the settings window so the launch did something.
+    /// </summary>
+    /// <remarks>
+    /// Raised on the guard's watcher thread, so it marshals. Settings rather than a message box:
+    /// somebody launching Jane when it is already running is usually looking for it, and the
+    /// settings window is the thing they were looking for.
+    /// </remarks>
+    private void OnSecondInstanceAttempted(object? sender, EventArgs e) =>
+        Dispatcher.BeginInvoke(() => _windows?.ShowSettings());
 
     private void OnTrayCommand(object? sender, TrayCommandEventArgs e)
     {

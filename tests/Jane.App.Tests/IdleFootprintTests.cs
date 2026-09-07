@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using Jane.App.Composition;
 using Jane.Core.Platform;
 
 namespace Jane.App.Tests;
@@ -129,6 +130,12 @@ public sealed class IdleFootprintTests
         // Model weights are gigabytes and are not what this measures, so the throwaway profile
         // points at the real ones rather than making the app download them again.
         startInfo.Environment[JanePaths.EnvModelDir] = new JanePaths().Models;
+
+        // A claim of its own, for the same reason as the profile. Jane refuses to start a second
+        // copy of itself, so without this the child loses to whatever Jane the developer has
+        // running and exits before there is anything to measure.
+        startInfo.Environment[SingleInstance.EnvName] =
+            $"jane-idle-tests-{Guid.NewGuid():N}";
 
         return Process.Start(startInfo)
             ?? throw new InvalidOperationException("Could not start the Jane process.");
