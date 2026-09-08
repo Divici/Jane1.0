@@ -57,6 +57,9 @@ public sealed partial class LowLevelKeyboardHook : IHotkeyListener, IKeyboardHoo
     private long _longestCallbackTicks;
     private int _dictationActive;
     private int _pipelineActive;
+
+    /// <summary>Whether the last Esc key-down was hidden, so its key-up is hidden with it.</summary>
+    private int _swallowedEscapeDown;
     private volatile bool _stopping;
     private volatile bool _held;
     private bool _disposed;
@@ -185,21 +188,43 @@ public sealed partial class LowLevelKeyboardHook : IHotkeyListener, IKeyboardHoo
     /// The whole body of the hook procedure, minus the Win32 plumbing around it.
     /// </summary>
     /// <returns>
-    /// True if the key must be swallowed. Only ever true for Esc during a dictation; everything
-    /// else -- the bound key included -- falls through to <c>CallNextHookEx</c>.
+    /// True if the key must be swallowed. Only ever true for Esc during a dictation, and for the
+    /// key-up that matches such a key-down; everything else -- the bound key included -- falls
+    /// through to <c>CallNextHookEx</c>.
     /// </returns>
     /// <remarks>
+    /// <para>
     /// Factored out so the "no allocation" and "does not swallow the key" rules can be asserted
     /// directly, without installing a hook or pressing a key. Every operation below is a field
     /// read, a struct copy or an ordered write.
+    /// </para>
+    /// <para>
+    /// The down and the up are swallowed as a pair, and that is the whole reason this is not a
+    /// one-line predicate. Cancelling a dictation clears the active flag between the two, so a
+    /// rule that only looked at the current state swallowed the down and delivered the up -- and
+    /// an application that receives a key-up it never saw pressed is entitled to do anything at
+    /// all with it. A key Jane hides, it hides completely.
+    /// </para>
     /// </remarks>
     public bool RecordHookEvent(int virtualKey, bool isKeyDown, long timestamp)
     {
         _queue.TryEnqueue(new RawKeyEvent(virtualKey, isKeyDown, timestamp));
 
-        return virtualKey == HotkeyBinding.VkEscape
-            && isKeyDown
-            && (Volatile.Read(ref _dictationActive) != 0 || Volatile.Read(ref _pipelineActive) != 0);
+        if (virtualKey != HotkeyBinding.VkEscape)
+        {
+            return false;
+        }
+
+        if (!isKeyDown)
+        {
+            // Consumed, so a second up with no down of its own -- a key already held when Jane
+            // started, or a repeat the hook missed -- is delivered rather than silently eaten.
+            return Interlocked.Exchange(ref _swallowedEscapeDown, 0) != 0;
+        }
+
+        var swallow = Volatile.Read(ref _dictationActive) != 0 || Volatile.Read(ref _pipelineActive) != 0;
+        Volatile.Write(ref _swallowedEscapeDown, swallow ? 1 : 0);
+        return swallow;
     }
 
     /// <summary>

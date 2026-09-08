@@ -78,11 +78,16 @@ public sealed class HotkeyTests
 
         Assert.False(hook.RecordHookEvent(HotkeyBinding.VkEscape, isKeyDown: true, At(0)));
 
+        // An idle key-down passes through, so its key-up must too: an application that saw the
+        // press has to see the release.
+        Assert.False(hook.RecordHookEvent(HotkeyBinding.VkEscape, isKeyDown: false, At(5)));
+
         hook.NotifyPipelineActive(true);
         Assert.True(hook.RecordHookEvent(HotkeyBinding.VkEscape, isKeyDown: true, At(10)));
 
-        // Key-up always passes through, or the app underneath sees a key that never came back up.
-        Assert.False(hook.RecordHookEvent(HotkeyBinding.VkEscape, isKeyDown: false, At(20)));
+        // ...and a key-down Jane hid takes its key-up with it. This used to pass the up through,
+        // which handed the application underneath a release for a press it never received.
+        Assert.True(hook.RecordHookEvent(HotkeyBinding.VkEscape, isKeyDown: false, At(20)));
 
         hook.NotifyPipelineActive(false);
         Assert.False(hook.RecordHookEvent(HotkeyBinding.VkEscape, isKeyDown: true, At(30)));

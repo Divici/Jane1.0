@@ -178,6 +178,19 @@ internal sealed class FakeAsyncKeyState : IAsyncKeyState
 
     public void HoldForPolls(int virtualKey, int polls) => _heldForPolls[virtualKey] = polls;
 
+    /// <summary>
+    /// Reports a key as up until the given poll, and down from then on.
+    /// </summary>
+    /// <remarks>
+    /// The shape a stuck modifier actually has: the gate sees a clean keyboard and lets the
+    /// injection through, and by the time anything checks again a key is down. Whether the user
+    /// pressed it or Jane left it there is exactly what cannot be told apart from here, which is
+    /// why the response is to release it either way.
+    /// </remarks>
+    public void HoldFromPoll(int virtualKey, int fromPoll) => _heldFromPoll[virtualKey] = fromPoll;
+
+    private readonly Dictionary<int, int> _heldFromPoll = [];
+
     public int QueriesFor(int virtualKey) => _queries.GetValueOrDefault(virtualKey);
 
     /// <summary>A monotonic read counter, so another fake can record "when" it was called.</summary>
@@ -188,6 +201,12 @@ internal sealed class FakeAsyncKeyState : IAsyncKeyState
         var query = _queries.GetValueOrDefault(virtualKey) + 1;
         _queries[virtualKey] = query;
         TotalQueries++;
+
+        if (_heldFromPoll.TryGetValue(virtualKey, out var from) && query >= from)
+        {
+            return true;
+        }
+
         return _heldForPolls.TryGetValue(virtualKey, out var polls) && query <= polls;
     }
 }

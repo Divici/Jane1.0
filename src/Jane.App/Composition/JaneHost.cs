@@ -733,6 +733,20 @@ public sealed class SileroVoiceActivityGate(SileroVadGate gate) : IVoiceActivity
     public VoiceActivityResult Process(ReadOnlyMemory<float> samples)
     {
         var result = gate.Process(samples);
-        return new VoiceActivityResult(result.ContainsSpeech, result.Samples);
+
+        // Rebased onto the trimmed buffer. The gate reports offsets in the original buffer's
+        // coordinates, and the orchestrator only ever holds the trimmed one -- handing over the
+        // original offsets would put every cut point in the wrong place by exactly the amount of
+        // leading silence, which is the one quantity that varies per dictation.
+        var segments = new SpeechSpan[result.Segments.Count];
+        for (var i = 0; i < segments.Length; i++)
+        {
+            var segment = result.Segments[i];
+            segments[i] = new SpeechSpan(
+                Math.Max(0, segment.StartSample - result.LeadingTrimmedSamples),
+                segment.SampleCount);
+        }
+
+        return new VoiceActivityResult(result.ContainsSpeech, result.Samples, segments);
     }
 }

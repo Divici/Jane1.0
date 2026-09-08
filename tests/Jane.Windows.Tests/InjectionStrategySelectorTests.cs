@@ -98,8 +98,10 @@ public sealed class InjectionStrategySelectorTests
         var selector = new InjectionStrategySelector();
         var threshold = InjectionStrategySelectorOptions.Default.Fallback.UnicodeMaxCharacters;
 
-        Assert.Equal(InjectionStrategy.Unicode, selector.Select(Window("notepad"), threshold).Strategy);
-        Assert.Equal(InjectionStrategy.Clipboard, selector.Select(Window("notepad"), threshold + 1).Strategy);
+        // Deliberately an application nothing has a rule for. Notepad used to stand in here and no
+        // longer can: it has a rule of its own now, which is the point of that rule.
+        Assert.Equal(InjectionStrategy.Unicode, selector.Select(Window("someeditor"), threshold).Strategy);
+        Assert.Equal(InjectionStrategy.Clipboard, selector.Select(Window("someeditor"), threshold + 1).Strategy);
     }
 
     [Fact]

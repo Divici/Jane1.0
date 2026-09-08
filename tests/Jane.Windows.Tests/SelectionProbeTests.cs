@@ -191,6 +191,9 @@ public sealed class SelectionProbeTests
     {
         public Dictionary<uint, byte[]> Contents { get; } = [];
 
+        /// <summary>Never consulted here: the selection probe reads the clipboard, it does not paste.</summary>
+        public uint SequenceNumber => 1;
+
         /// <summary>What a Ctrl+C puts on the clipboard, or null for a target that ignores it.</summary>
         public string? CopyProduces { get; init; }
 

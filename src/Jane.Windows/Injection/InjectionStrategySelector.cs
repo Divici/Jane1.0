@@ -24,6 +24,19 @@ public sealed record InjectionStrategySelectorOptions(
     IReadOnlyDictionary<string, InjectionRule> WindowClassRules,
     InjectionRule Fallback)
 {
+    /// <summary>
+    /// Why Notepad types rather than pastes, at any length.
+    /// </summary>
+    /// <remarks>
+    /// Windows 11's Notepad is a WinUI application, and the clipboard round trip through it is
+    /// where a long dictation was reported arriving as something other than the text. Its editor
+    /// accepts synthetic Unicode without complaint -- it is a plain-text box with no rich formats,
+    /// no completion and no input method of its own -- so the clipboard buys nothing here and
+    /// costs a borrow of the user's clipboard and a race to give it back.
+    /// </remarks>
+    private const string PlainTextReason =
+        "Plain-text editor: synthetic Unicode keystrokes land intact at any length, so there is no reason to borrow the clipboard.";
+
     private const string TerminalReason =
         "Terminal: Ctrl+V is not paste in a console, and Windows Terminal interrupts a multiline paste with a confirmation dialog. Synthetic Unicode keystrokes are the only strategy that always lands.";
 
@@ -55,10 +68,13 @@ public sealed record InjectionStrategySelectorOptions(
         var chromium = new InjectionRule(DefaultUnicodeMaxCharacters, InjectionStrategy.Clipboard, ChromiumReason);
         var office = new InjectionRule(4_000, InjectionStrategy.Clipboard, OfficeReason);
 
+        var plainText = new InjectionRule(int.MaxValue, InjectionStrategy.Unicode, PlainTextReason);
+
         var processRules = new Dictionary<string, InjectionRule>(StringComparer.OrdinalIgnoreCase);
         Add(processRules, terminal,
             "windowsterminal", "wt", "openconsole", "conhost", "cmd", "powershell", "pwsh",
             "mintty", "alacritty", "wezterm", "wezterm-gui", "putty", "kitty");
+        Add(processRules, plainText, "notepad", "wordpad");
         Add(processRules, electron,
             "code", "code - insiders", "cursor", "windsurf", "slack", "discord", "teams",
             "ms-teams", "notion", "obsidian", "signal", "whatsapp", "spotify", "figma",

@@ -69,6 +69,18 @@ public interface IClipboard
 
     /// <summary>Empties the clipboard and writes exactly these payloads. An empty list clears it.</summary>
     void SetContents(IReadOnlyList<ClipboardPayload> payloads);
+
+    /// <summary>
+    /// Windows' clipboard sequence number, which changes whenever the clipboard is opened.
+    /// </summary>
+    /// <remarks>
+    /// The one piece of evidence available that a paste has actually been read. Jane sets the
+    /// clipboard, synthesises Ctrl+V and then has to decide when it is safe to put the user's own
+    /// contents back; the target opening the clipboard to read the paste moves this number, and
+    /// waiting for that beats guessing a delay. Zero when it cannot be read, which the caller
+    /// treats as "no evidence available" and falls back to the ceiling.
+    /// </remarks>
+    uint SequenceNumber { get; }
 }
 
 /// <summary>
@@ -100,6 +112,16 @@ public sealed partial class Win32Clipboard : IClipboard
     private const uint GlobalMoveable = 0x0002;
     private const int OpenAttempts = 10;
     private const int OpenRetryDelayMs = 10;
+
+    /// <summary>
+    /// <c>GetClipboardSequenceNumber</c>: changes every time the clipboard is opened.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately does not open the clipboard itself, so reading it cannot race the target that
+    /// is trying to. Returns zero if Windows will not answer, which the caller reads as "no
+    /// evidence" rather than as "nothing has changed".
+    /// </remarks>
+    public uint SequenceNumber => GetClipboardSequenceNumber();
 
     public uint RegisterFormat(string name)
     {
@@ -221,6 +243,9 @@ public sealed partial class Win32Clipboard : IClipboard
 
     [LibraryImport("user32.dll", EntryPoint = "RegisterClipboardFormatW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
     private static partial uint RegisterClipboardFormat(string name);
+
+    [LibraryImport("user32.dll")]
+    private static partial uint GetClipboardSequenceNumber();
 
     [LibraryImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

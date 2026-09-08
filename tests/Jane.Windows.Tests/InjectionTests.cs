@@ -785,6 +785,22 @@ internal sealed class FakeClipboard : IClipboard
         _contents.Add(new ClipboardPayload(format, []));
     }
 
+    /// <summary>
+    /// Bumped on every read and every write, as Windows bumps its own on every clipboard open.
+    /// </summary>
+    /// <remarks>
+    /// The paste-settle wait watches this to learn that the target opened the clipboard. A fake
+    /// that never moved it would make every test take the ceiling, and one that moved it on its
+    /// own would make the wait look like it confirmed something it did not.
+    /// </remarks>
+    public uint SequenceNumber { get; private set; } = 1;
+
+    /// <summary>Stands in for the target reading the paste, which is what moves the real number.</summary>
+    public void SimulateRead() => SequenceNumber++;
+
+    /// <summary>Windows bumps the number on every open, Jane's own writes included.</summary>
+    private void Touch() => SequenceNumber++;
+
     public IReadOnlyList<ClipboardPayload> Snapshot() => [.. _contents];
 
     public uint RegisterFormat(string name)
@@ -816,6 +832,7 @@ internal sealed class FakeClipboard : IClipboard
 
     public void SetContents(IReadOnlyList<ClipboardPayload> payloads)
     {
+        Touch();
         SetContentsCalls.Add([.. payloads]);
         _contents.Clear();
         _contents.AddRange(payloads);

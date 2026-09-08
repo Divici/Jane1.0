@@ -41,6 +41,7 @@ public sealed class SendInputInjector(
     SendInputInjectorOptions? options = null) : ITextInjector
 {
     private readonly InjectionPreflight _preflight = new(focusTracker, liveness, modifierGate);
+    private readonly IAsyncKeyState _keyState = modifierGate.KeyState;
     private readonly SendInputInjectorOptions _options = options ?? SendInputInjectorOptions.Default;
 
     public async Task<InjectionResult> InjectAsync(
@@ -99,7 +100,18 @@ public sealed class SendInputInjector(
 
         return new InjectionResult(
             true, InjectionStrategy.Unicode, normalised.Length, Stopwatch.GetElapsedTime(startedAt))
-        { Diagnostics = diagnostics with { RecordsSent = sent, RecordsAccepted = accepted } };
+        {
+            Diagnostics = diagnostics with
+            {
+                RecordsSent = sent,
+                RecordsAccepted = accepted,
+
+                // This strategy presses no modifiers of its own, but a user still holding one past
+                // the gate's timeout leaves the same broken keyboard behind, and the sweep costs
+                // one key-state read per modifier.
+                ModifiersStuckAfter = ModifierRelease.ReleaseHeldModifiers(_keyState, sendInput),
+            },
+        };
     }
 
     /// <summary>CRLF, lone CR and lone LF all mean one Enter press.</summary>

@@ -5,8 +5,24 @@ namespace Jane.Core.Abstractions;
 /// recogniser, which is what makes a stray press of a common game bind free rather than merely
 /// quiet.
 /// </param>
+/// <param name="Start">Sample offset into the buffer this span describes.</param>
+public readonly record struct SpeechSpan(int Start, int Length)
+{
+    public int End => Start + Length;
+
+    public override string ToString() => $"[{Start}, {End})";
+}
+
 /// <param name="Trimmed">Leading and trailing silence removed. Empty when there was no speech.</param>
-public readonly record struct VoiceActivityResult(bool ContainsSpeech, ReadOnlyMemory<float> Trimmed);
+/// <param name="Segments">
+/// Where the speech is <em>within</em> <paramref name="Trimmed"/>, so the pauses between runs are
+/// available as cut points for a dictation too long to recognise in one call. Empty when the gate
+/// does not report them, which is the same as having no cut points.
+/// </param>
+public readonly record struct VoiceActivityResult(
+    bool ContainsSpeech,
+    ReadOnlyMemory<float> Trimmed,
+    IReadOnlyList<SpeechSpan>? Segments = null);
 
 /// <summary>Trims silence from a finished utterance and says whether anything was spoken.</summary>
 /// <remarks>

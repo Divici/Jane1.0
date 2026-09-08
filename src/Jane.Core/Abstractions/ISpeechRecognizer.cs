@@ -25,7 +25,31 @@ public sealed record WordTiming(string Word, double Start, double End);
 /// Cost of bringing the engine up. Reported separately because the cold path is the number that
 /// decides whether the model stays RAM-resident, and a warm-only average would hide it.
 /// </param>
-public sealed record RecognitionTimings(TimeSpan Load, TimeSpan Feature, TimeSpan Decode, TimeSpan Total);
+public sealed record RecognitionTimings(TimeSpan Load, TimeSpan Feature, TimeSpan Decode, TimeSpan Total)
+{
+    public static RecognitionTimings Zero { get; } =
+        new(TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero);
+
+    /// <summary>
+    /// Sums two measurements, for an utterance recognised in more than one call.
+    /// </summary>
+    /// <remarks>
+    /// Adding is right for every field here, load included: a second chunk hitting an
+    /// already-loaded engine contributes zero, so the sum is the real cost of the whole utterance
+    /// rather than an average that hides which chunk was slow.
+    /// </remarks>
+    public static RecognitionTimings operator +(RecognitionTimings left, RecognitionTimings right)
+    {
+        ArgumentNullException.ThrowIfNull(left);
+        ArgumentNullException.ThrowIfNull(right);
+
+        return new RecognitionTimings(
+            left.Load + right.Load,
+            left.Feature + right.Feature,
+            left.Decode + right.Decode,
+            left.Total + right.Total);
+    }
+}
 
 /// <param name="Text">Punctuated, cased text. Parakeet emits both natively; no restoration pass.</param>
 /// <param name="DecodingMethod">Which decoder actually ran -- greedy or beam. The bench reports on this axis.</param>

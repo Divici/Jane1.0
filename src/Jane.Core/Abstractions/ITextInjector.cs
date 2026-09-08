@@ -79,6 +79,17 @@ public sealed record InjectionDiagnostics
     /// <summary>Whether the user's clipboard came back. Null on the Unicode path, which never took it.</summary>
     public bool? ClipboardRestored { get; init; }
 
+    /// <summary>
+    /// Modifiers still physically down when the injection finished, which Jane then released.
+    /// </summary>
+    /// <remarks>
+    /// Null on a healthy injection. Non-null means something -- a partly accepted paste chord, or
+    /// a user still holding a key -- left the keyboard in a state where every subsequent keystroke
+    /// would have arrived as a control chord. Jane releases it and says so here rather than
+    /// leaving the user to work out why their typing stopped producing letters.
+    /// </remarks>
+    public string? ModifiersStuckAfter { get; init; }
+
     public static InjectionDiagnostics Empty { get; } = new();
 }
 

@@ -74,6 +74,9 @@ internal sealed class Harness
 
     public bool SpeechDetected { get; init; } = true;
 
+    /// <summary>Where the speech is, for the tests that care about chunking a long utterance.</summary>
+    public IReadOnlyList<SpeechSpan>? Segments { get; init; }
+
     public Exception? RecognizerThrows { get; init; }
 
     public Task? RecognizerGate { get; init; }
@@ -112,6 +115,9 @@ internal sealed class Harness
 
     internal sealed class FakeAudioSource : IAudioSource
     {
+        /// <summary>How much audio Stop hands back. Only the long-dictation tests change it.</summary>
+        public TimeSpan CaptureLength { get; set; } = TimeSpan.FromSeconds(1);
+
         /// <summary>The last routing applied. Nothing here opens a device, so it is only recorded.</summary>
         public MicrophoneRouting? Routing { get; private set; }
 
@@ -143,9 +149,10 @@ internal sealed class Harness
         {
             State = State with { IsCapturing = false };
 
-            // One second of a quiet tone: long enough to be a plausible utterance, and non-zero
-            // so a fake VAD is not the only thing standing between silence and the recogniser.
-            var samples = new float[AudioFormat.SampleRate];
+            // A quiet tone: long enough to be a plausible utterance, and non-zero so a fake VAD is
+            // not the only thing standing between silence and the recogniser. One second unless a
+            // test is specifically about the length.
+            var samples = new float[AudioFormat.SamplesFor(CaptureLength)];
             for (var i = 0; i < samples.Length; i++)
             {
                 samples[i] = (float)(Math.Sin(i * 0.05) * 0.2);
@@ -180,6 +187,12 @@ internal sealed class Harness
         /// <summary>The options the last transcription actually received, so biasing can be asserted.</summary>
         public RecognitionOptions? LastOptions { get; private set; }
 
+        /// <summary>One transcript per call, for asserting how a chunked utterance is joined.</summary>
+        public List<string> PerCall { get; } = [];
+
+        /// <summary>How many samples each call was given, in order.</summary>
+        public List<int> SampleCounts { get; } = [];
+
         public async Task LoadAsync(CancellationToken cancellationToken)
         {
             if (harness.RecognizerLoadGate is { } gate)
@@ -195,6 +208,7 @@ internal sealed class Harness
         {
             Calls++;
             LastOptions = options;
+            SampleCounts.Add(pcm16k.Length);
 
             if (harness.RecognizerGate is { } gate)
             {
@@ -206,8 +220,15 @@ internal sealed class Harness
                 throw ex;
             }
 
+            // Each call gets its own line when a test supplies them, so a joined transcript shows
+            // which piece came from where rather than repeating one string.
+            var text = PerCall.Count > 0
+                ? PerCall[Math.Min(Calls - 1, PerCall.Count - 1)]
+                : Transcript;
+
             return new RecognitionResult(
-                Transcript, [],
+                text,
+                [new WordTiming(text.Split(' ')[0], 0.1, 0.4)],
                 new RecognitionTimings(TimeSpan.Zero, TimeSpan.Zero, TimeSpan.FromMilliseconds(80), TimeSpan.FromMilliseconds(80)),
                 "greedy_search");
         }
@@ -258,7 +279,10 @@ internal sealed class Harness
     internal sealed class FakeVad(Harness harness) : IVoiceActivityGate
     {
         public VoiceActivityResult Process(ReadOnlyMemory<float> samples) =>
-            new(harness.SpeechDetected, harness.SpeechDetected ? samples : ReadOnlyMemory<float>.Empty);
+            new(
+                harness.SpeechDetected,
+                harness.SpeechDetected ? samples : ReadOnlyMemory<float>.Empty,
+                harness.Segments);
     }
 
     internal sealed class FakeFormatter : ITranscriptFormatter

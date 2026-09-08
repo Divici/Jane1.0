@@ -56,6 +56,17 @@ public sealed class ModifierGate(IAsyncKeyState keyState, ModifierGateOptions? o
 {
     private readonly ModifierGateOptions _options = options ?? ModifierGateOptions.Default;
 
+    /// <summary>
+    /// The physical key state this gate reads.
+    /// </summary>
+    /// <remarks>
+    /// Exposed so an injector can ask the same source again on the way out. Checking with a second
+    /// key-state object would be checking a second thing: these are process-wide Win32 reads in
+    /// production, but a test that gates on one fake and verifies against another is asserting
+    /// nothing about the code under test.
+    /// </remarks>
+    public IAsyncKeyState KeyState => keyState;
+
     /// <summary>Every modifier Jane refuses to type underneath, sided variants and aggregates.</summary>
     public static IReadOnlyList<int> ModifierVirtualKeys { get; } =
     [

@@ -30,6 +30,18 @@ public sealed record OrchestratorOptions
     /// See <see cref="SpacingPolicy"/> for what "separated" means in the awkward cases.
     /// </remarks>
     public bool AutoSpace { get; init; } = true;
+
+    /// <summary>
+    /// The longest stretch of audio handed to the recogniser in one call.
+    /// </summary>
+    /// <remarks>
+    /// Anything longer is split at pauses first. Offline sherpa-onnx models are trained and
+    /// evaluated on utterances of a few seconds and degrade on multi-minute inputs, and a capture
+    /// is capped at five minutes -- so the two ends of that range were a long way apart, with
+    /// nothing in between. Thirty seconds matches the voice-activity detector's own per-segment
+    /// ceiling, so the two agree about what "long" means.
+    /// </remarks>
+    public TimeSpan MaxRecognitionChunk { get; init; } = UtteranceChunker.DefaultMaxChunk;
 }
 
 /// <summary>
@@ -330,7 +342,7 @@ public sealed class DictationOrchestrator : IAsyncDisposable
                     ? new RecognitionOptions(context.Hotwords)
                     : RecognitionOptions.Default;
 
-                recognition = await _recognizer.TranscribeAsync(voice.Trimmed, options, cancellationToken);
+                recognition = await TranscribeAsync(voice, options, cancellationToken);
             }
             catch (SpeechEngineUnavailableException ex)
             {
@@ -522,6 +534,7 @@ public sealed class DictationOrchestrator : IAsyncDisposable
                 .Add("records", Records(diagnostics))
                 .Add("mods-at-start", diagnostics.ModifiersInitiallyHeld)
                 .Add("mods-held", diagnostics.ModifiersStillHeld)
+                .Add("mods-stuck", diagnostics.ModifiersStuckAfter)
                 .Add("mods-wait", diagnostics.ModifierWait)
                 .Add("settle", diagnostics.PasteSettle)
                 .Add("settle-why", diagnostics.PasteSettleReason)
@@ -534,6 +547,58 @@ public sealed class DictationOrchestrator : IAsyncDisposable
             : string.Create(
                 CultureInfo.InvariantCulture,
                 $"{diagnostics.RecordsAccepted}/{diagnostics.RecordsSent}");
+
+    /// <summary>
+    /// Recognises the utterance, in one call or several, cutting only at pauses.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A dictation short enough to fit the budget takes exactly the path it always took: one call,
+    /// one result, no joining. That is the overwhelmingly common case and it must not get slower
+    /// or subtly different to serve the rare one.
+    /// </para>
+    /// <para>
+    /// A longer one is split at silences the voice-activity gate already found -- see
+    /// <see cref="UtteranceChunker"/> for why never cutting inside speech is the governing rule --
+    /// and the pieces are joined the same way two consecutive dictations into one window are, so
+    /// a chunk boundary reads like the sentence boundary it actually is.
+    /// </para>
+    /// <para>
+    /// Word timings come back rebased onto the whole utterance rather than onto each chunk. A
+    /// consumer given per-chunk offsets would silently place every word after the first boundary
+    /// in the wrong place.
+    /// </para>
+    /// </remarks>
+    private async Task<RecognitionResult> TranscribeAsync(
+        VoiceActivityResult voice, RecognitionOptions options, CancellationToken cancellationToken)
+    {
+        var chunks = UtteranceChunker.Chunk(
+            voice.Segments ?? [],
+            voice.Trimmed.Length,
+            AudioFormat.SamplesFor(_options.MaxRecognitionChunk));
+
+        if (chunks.Count == 1)
+        {
+            return await _recognizer.TranscribeAsync(voice.Trimmed, options, cancellationToken);
+        }
+
+        List<RecognitionResult> pieces = new(chunks.Count);
+
+        foreach (var chunk in chunks)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var slice = voice.Trimmed.Slice(chunk.Start, Math.Min(chunk.Length, voice.Trimmed.Length - chunk.Start));
+            pieces.Add(await _recognizer.TranscribeAsync(slice, options, cancellationToken));
+        }
+
+        _log.Write(LogLevel.Info, "asr", "Long utterance recognised in pieces.", LogFields.New()
+            .Add("chunks", chunks.Count)
+            .Add("audio", AudioFormat.DurationOf(voice.Trimmed.Length))
+            .Add("segments", voice.Segments?.Count));
+
+        return UtteranceChunker.Join(pieces, chunks);
+    }
 
     private async Task<bool> WaitForEngineAsync(CancellationToken cancellationToken)
     {
