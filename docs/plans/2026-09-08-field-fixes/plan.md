@@ -11,7 +11,7 @@ Five things were reported after a day of real use. Three have a confirmed root c
 | 1 | Onboarding runs on every boot | **Confirmed** | `App` gates onboarding on the stale `settings.json`, but onboarding writes the flag to SQLite |
 | 2 | Models page says Qwen "Not downloaded" | **Confirmed** | Installed build has no `tools\ollama`, so Jane's private Ollama never starts and every presence probe returns false |
 | 3 | Long dictation into Notepad produced dots; typing afterwards produced more dots | **Diagnose first** | Only >200-char text goes down the clipboard path; the paste is restored after a 60 ms fixed delay. Terminals (where Claude Code runs) never use that path, which matches "works here, nowhere else" |
-| 4 | First words of every dictation cut off | **Confirmed mechanism** | Default microphone activation is `WhileDictating`: the device is *opened* on key-down, so the 500 ms pre-roll ring is empty when the first word is spoken |
+| 4 | First words of every dictation cut off | **Confirmed mechanism** | Default microphone activation is `WhileDictating`: the device is *opened* on key-down, so the 500 ms pre-roll ring is empty when the first word is spoken. The mic must stay off until key-down (user constraint), so the fix is a pre-initialized but stopped stream, not an always-open one |
 | 5 | "Does Claude Code have its own dictation on Right Ctrl?" | Answered below | see § Claude Code and Right Ctrl |
 
 Evidence gathered (no code changed):
@@ -88,14 +88,19 @@ Evidence gathered (no code changed):
 
 **Cause.** `MicrophoneSettings.Activation` defaults to `WhileDictating` with an 8 s idle release. On key-down the orchestrator calls `_audio.Arm()`, which *opens the device*. WASAPI open + first buffer is 100–400 ms depending on the driver, and the 500 ms `PreRollBuffer` only fills while the stream is running, so on a cold start there is nothing to back-date into. `Pressed` is emitted immediately (not after `MinimumHold`), so the hotkey is not the delay; the microphone is. Everyone speaks within ~150 ms of pressing, so the first syllable or word is gone on every cold dictation, and intermittently on warm ones when the release timer already fired.
 
-**Fix.**
-1. Red: `CaptureTests` with `FakeCaptureDevice` reporting a 300 ms open latency — assert that under the default activation, `Arm()` followed by speech at t=100 ms retains that speech.
-2. Green, default change: make `AlwaysOpen` the default activation for new **and existing** settings (migration in `JaneMigrations`: if the user never touched `microphone.activation`, flip it). Under `AlwaysOpen` the pre-roll ring is always warm and `Arm()` costs ~0. Keep `WhileDictating` as an explicit privacy option, and when it is chosen, extend pre-roll to cover the open latency by **pre-arming on the hotkey's key-down edge before the state machine's verdict** and by keeping the device open for a longer idle window (default 60 s instead of 8 s) so consecutive dictations are warm.
-3. Grow `PreRollBuffer.DefaultWindow` from 500 ms to 1 000 ms; ring cost is 16 k samples, negligible.
-4. Fix the VAD leading edge: when the gate first flags speech, include the preceding 300 ms of samples (Silero has onset latency of one or two 32 ms frames plus its threshold). Test on `tests/fixtures/audio/proper-01.wav` trimmed so speech starts at 0 ms — the transcript's first word must survive.
-5. Surface it: the microphone step in onboarding and the Settings microphone card explain the trade-off in one line ("Always open: instant start, mic indicator stays on. While dictating: private, may clip the first word") and show the measured open latency from the last dictation (log from Task 3 Step 0 feeds it).
+**Constraint (from the user, 2026-09-08).** The microphone must stay **off until the key is pressed**. An always-open capture stream degrades the sound of everything else on the system (Bluetooth headsets drop from A2DP to the low-quality hands-free profile while a capture stream is running, and Windows ducks other apps for communications streams). `AlwaysOpen` therefore does **not** become the default; `WhileDictating` stays. The fix has to remove the open latency without keeping the stream running.
 
-**Verify:** ten cold dictations starting with "Testing one two three" all begin with "Testing" in history.
+**Fix.**
+1. Red: `CaptureTests` with `FakeCaptureDevice` reporting a 300 ms *open* latency and a ~5 ms *start* latency — assert that under `WhileDictating`, `Arm()` followed by speech at t=100 ms retains that speech.
+2. Green — **warm but silent**: split "open" from "start". Today `Start()` maps to NAudio's `StartRecording()`, which initializes the WASAPI client *and* starts the stream in one call, so the whole cost lands on key-down. Instead, at launch (and after every device change / idle release) create and initialize the `IAudioClient` for the chosen endpoint but do **not** call `Start`. An initialized-but-stopped stream does not light the mic-in-use indicator, does not switch a Bluetooth headset to hands-free, and does not trigger ducking — the endpoint only goes active on `Start`. On key-down, `Start()` alone runs in single-digit milliseconds, well inside the 50 ms key-down-to-armed budget, so the first word is captured. On idle release call `Stop()` (endpoint inactive again) but keep the initialized client. `CaptureDevice` gets `Prepare()` / `Start()` / `Stop()` as separate members; `WasapiDeviceFactory` implements them on NAudio's `WasapiCapture` (its `Initialize` is internal to `StartRecording`, so either call the split via reflection-free subclassing or drive `IAudioClient` directly — decide by reading NAudio 2.x source during the task; direct `IAudioClient` is preferred because `Jane.Windows` already hand-writes COM for UIA).
+3. **Measure, don't assume**: add a `MicrophoneProbe` check to `jane doctor` that reports, for the selected device, (a) whether the headset's playback quality changes while a stopped-but-initialized client exists (poll the render endpoint's mix format), and (b) the measured `Start()` latency. If some driver still goes active on `Initialize`, fall back for that device to the current behaviour plus a longer idle window, and say so in Settings. Test the probe against `FakeCaptureDevice`.
+4. Opt out of communications ducking explicitly (`IAudioSessionControl2::SetDuckingPreference(true)`, and use the default/console stream category, never `Communications`) so even the brief dictating window does not turn other apps down. This addresses part of "messes up the sound of everything else" independently of the profile switch.
+5. Grow `PreRollBuffer.DefaultWindow` from 500 ms to 1 000 ms; with a warm client the ring fills from the first `Start()`, and while the stream is stopped it simply holds the last second from the previous dictation, which must be **cleared on `Start()`** so stale audio is never back-dated in. Test that.
+6. Fix the VAD leading edge: when the gate first flags speech, include the preceding 300 ms of samples (Silero has onset latency of one or two 32 ms frames plus its threshold). Test on `tests/fixtures/audio/proper-01.wav` trimmed so speech starts at 0 ms — the transcript's first word must survive.
+7. Keep the idle release at 8 s (the user wants the endpoint inactive quickly); it now only controls `Stop()`, not teardown of the client.
+8. Surface it: the microphone step in onboarding and the Settings microphone card say "Off until you press the key (default). Jane keeps the device ready so the first word is not lost." and show the measured start latency from the last dictation (log from Task 3 Step 0 feeds it). `AlwaysOpen` remains an option, labelled with the headset/ducking cost.
+
+**Verify:** with a Bluetooth headset playing music, Jane idle must not change playback quality or light the mic indicator; ten cold dictations starting with "Testing one two three" all begin with "Testing" in history.
 
 ---
 
@@ -118,7 +123,7 @@ Sources: https://code.claude.com/docs/en/voice-dictation.md and https://code.cla
 1. Task 3 Step 0 (file log) first — every other task's verification reads it.
 2. Task 1 (onboarding) — smallest, highest annoyance, independent.
 3. Task 2 (Ollama locator + in-app runtime install + packaging) — unblocks formatting on this machine.
-4. Task 4 (microphone always-open + pre-roll + VAD leading edge).
+4. Task 4 (warm-but-stopped microphone client + ducking opt-out + pre-roll + VAD leading edge).
 5. Task 3 Steps 1–3 (reproduce, then clipboard settle, chord release, hook symmetry, Notepad rule, long-audio segmentation).
 6. Ship: `build/ship.ps1`, reinstall to `C:\Program Files\Jane`, reboot, confirm no wizard, models Installed, Notepad long dictation, first-word check.
 
