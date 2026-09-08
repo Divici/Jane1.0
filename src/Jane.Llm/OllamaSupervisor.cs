@@ -9,12 +9,21 @@ namespace Jane.Llm;
 /// Two: the GPU-routed formatting model and the CPU-routed fallback can be resident at once,
 /// which is what lets a single server serve both routes (plan.md P0-1).
 /// </param>
+/// <param name="AdoptOnly">
+/// Never start a child; use a server the user already runs, or fail saying so.
+/// </param>
+/// <remarks>
+/// <see cref="AdoptOnly"/> backs the opt-in "use my own Ollama" setting. Without it, pointing Jane
+/// at port 11434 and finding nothing there would start a second server on the desktop app's own
+/// port -- which is the one thing that arrangement must never do.
+/// </remarks>
 public sealed record OllamaSupervisorOptions(
     string ExePath,
     string Host = "127.0.0.1:11435",
     string KeepAlive = "180s",
     int MaxLoadedModels = 2,
-    TimeSpan? StartupTimeout = null)
+    TimeSpan? StartupTimeout = null,
+    bool AdoptOnly = false)
 {
     public string BaseUrl => $"http://{Host}";
 
@@ -66,10 +75,16 @@ public sealed class OllamaSupervisor(OllamaSupervisorOptions options) : IAsyncDi
                 return false;
             }
 
+            if (Options.AdoptOnly)
+            {
+                throw new OllamaException(
+                    $"Nothing is listening on {Options.Host}. Jane is set to use an Ollama you run yourself, so it will not start one -- start Ollama, or turn that setting off and let Jane supervise its own copy.");
+            }
+
             if (!File.Exists(Options.ExePath))
             {
                 throw new OllamaException(
-                    $"{Options.ExePath} does not exist. Run build/get-ollama.ps1 first.");
+                    $"The model runtime is not installed: {Options.ExePath} does not exist. Download it from Jane's settings, under Models.");
             }
 
             var startInfo = new ProcessStartInfo(Options.ExePath, "serve")

@@ -79,6 +79,7 @@ public sealed class DoctorCommand(JaneEnvironment environment)
         new DiskSpaceProbe(environment.Paths),
         new ModelDirectoryProbe(environment.Paths),
         new SherpaNativeProbe(),
+        new OllamaRuntimeProbe(),
         new OllamaBinaryProbe(environment.OllamaExe),
         new PortOwnerProbe(),
         new OllamaReachableProbe(client, environment.OllamaBaseUrl),

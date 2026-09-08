@@ -440,6 +440,14 @@
                                               AutomationProperties.Name="Clean up transcripts with the language model" />
                                 </c:SettingRow>
 
+                                <c:SettingRow Header="Use the Ollama I run myself"
+                                              Description="Off, Jane supervises its own copy on port 11435 and shuts it down with itself. On, Jane talks to whatever is already listening on 11434 and starts nothing — it saves you a second 1.4 GB download and a second copy of every model, and costs you Jane's promise to give the graphics card back and to keep the machine quiet.">
+                                    <CheckBox Style="{StaticResource JaneSwitch}"
+                                              IsChecked="{Binding UseSystemOllama}"
+                                              AutomationProperties.AutomationId="UseSystemOllama"
+                                              AutomationProperties.Name="Use the Ollama I run myself instead of Jane's own copy" />
+                                </c:SettingRow>
+
                                 <c:SettingRow Header="Release the GPU after"
                                               Description="Jane sends one explicit unload this long after your last dictation, with a watchdog that kills the model if it is still resident afterwards.">
                                     <StackPanel Orientation="Horizontal">

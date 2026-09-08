@@ -457,6 +457,29 @@ public sealed class SettingsViewModel : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>
+    /// Whether Jane talks to an Ollama the user runs rather than supervising its own.
+    /// </summary>
+    /// <remarks>
+    /// Takes effect on the next start. Switching a live server out from under a resident model
+    /// would strand VRAM Jane could no longer ask anybody to release, which is the failure the
+    /// supervised copy exists to make impossible.
+    /// </remarks>
+    public bool UseSystemOllama
+    {
+        get => _current.Llm.UseSystemOllama;
+        set
+        {
+            if (value == _current.Llm.UseSystemOllama)
+            {
+                return;
+            }
+
+            Persist(s => s with { Llm = s.Llm with { UseSystemOllama = value } });
+            Raise();
+        }
+    }
+
     public IReadOnlyList<InGameChoice> InGameChoices { get; } =
     [
         new(InGameBehaviour.SkipLlm, "Skip formatting entirely",
@@ -733,6 +756,10 @@ public sealed class SettingsViewModel : ObservableObject, IDisposable
     {
         yield return ModelRow.ForAsset(ModelCatalog.ParakeetV2Int8, _provisioner, required: true);
         yield return ModelRow.ForAsset(ModelCatalog.SileroVad, _provisioner, required: true);
+
+        // The runtime sits with the models it runs. Its absence is what makes the two rows below
+        // unanswerable, so the remedy has to be visible in the same list as the symptom.
+        yield return ModelRow.ForHost(_provisioner);
 
         foreach (var spec in LlmModelCatalog.Required)
         {

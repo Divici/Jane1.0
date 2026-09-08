@@ -384,11 +384,30 @@ public sealed class JaneHost : IAsyncDisposable
             new SendInputInjector(focus, focus, sendInput, modifierGate),
             new ClipboardInjector(focus, focus, clipboard, sendInput, modifierGate));
 
+        // Where the model runtime is, and what to say if it is nowhere. The old code walked up
+        // from AppContext.BaseDirectory looking for tools/ollama and silently gave up, which is
+        // why an installed Jane never had a model host and never said so.
+        var runtime = OllamaLocator.Locate(OllamaSearchOptions.ForMachine(AppContext.BaseDirectory));
+        log.Write(
+            runtime.Found ? LogLevel.Info : LogLevel.Warning,
+            "llm",
+            runtime.Describe(),
+            LogFields.New().Add("source", runtime.Runtime?.Source).Add("enabled", current.Llm.Enabled));
+
+        foreach (var note in runtime.Notes)
+        {
+            log.Write(LogLevel.Warning, "llm", note);
+        }
+
         // The LLM stack is optional: if Ollama cannot be started, or the user has turned
         // formatting off, Jane still dictates and simply injects raw Parakeet output -- the same
         // path a running game takes.
-        var llm = current.Llm.Enabled
-            ? LlmStack.Create(Path.Combine(RepoOrInstallRoot(), "tools", "ollama", "ollama.exe"), current)
+        // A user who opted into their own Ollama needs no runtime of Jane's; the supervisor is in
+        // adopt-only mode and never looks at the path.
+        var llm = current.Llm.Enabled && (runtime.Found || current.Llm.UseSystemOllama)
+            ? LlmStack.Create(
+                runtime.Runtime?.ExePath ?? Path.Combine(OllamaLocator.UserRuntimeDirectory, OllamaLocator.ExeName),
+                current)
             : null;
 
         var dictionary = new UserDictionary(database);
@@ -451,11 +470,12 @@ public sealed class JaneHost : IAsyncDisposable
             });
 
         var downloader = new ModelDownloader(new HttpClient(), paths.Models);
+        var host = BuildHostProvisioning(current);
 
         // Onboarding must not leave a manual `ollama pull` as homework, so the provisioner drives
         // Jane's own supervised server rather than shelling out to the CLI.
         IModelProvisioner provisioner = llm is null
-            ? new WeightsOnlyProvisioner(downloader)
+            ? new WeightsOnlyProvisioner(downloader, host)
             : new ModelProvisioner(
                 downloader,
                 (model, progress, token) => llm.Puller.PullAsync(
@@ -463,7 +483,8 @@ public sealed class JaneHost : IAsyncDisposable
                     progress is null ? null : new Progress<PullProgress>(p =>
                         progress.Report(new LlmPullProgress(model, p.Completed, p.Total, p.Status))),
                     token),
-                (model, token) => llm.Puller.IsPresentAsync(model, token));
+                (model, token) => llm.Puller.IsPresentAsync(model, token),
+                host);
 
         log.Write(LogLevel.Info, "startup", "Dictation graph composed.", LogFields.New()
             .Add("engine", current.Speech.EngineId)
@@ -476,6 +497,47 @@ public sealed class JaneHost : IAsyncDisposable
             dispatcher, capture, recognizer, vad, hotkeys, orchestrator, overlay, llm,
             database, dictionary, instructions, history, uia, focus, injector,
             settingsRepository, provisioner, log);
+    }
+
+    /// <summary>
+    /// The model runtime's half of provisioning: where it is, and how to fetch it if it is not.
+    /// </summary>
+    /// <remarks>
+    /// The state is a function rather than a value because installing the runtime changes the
+    /// answer, and the settings window must not have to be reopened to see that. Jane downloads
+    /// into the user profile: it installs into Program Files, which the user it runs as cannot
+    /// write to, so beside the executable is not an option.
+    /// </remarks>
+    private static ModelHostProvisioning BuildHostProvisioning(JaneSettings settings)
+    {
+        if (!settings.Llm.Enabled)
+        {
+            return ModelHostProvisioning.Disabled;
+        }
+
+        if (settings.Llm.UseSystemOllama)
+        {
+            // The user runs their own. Whether it is up is a question for the pull probe, which
+            // asks the server rather than the filesystem, and there is nothing here to install.
+            return new ModelHostProvisioning(
+                () => ModelHostState.Ready(
+                    $"Using the Ollama you run yourself, on {LlmStack.SystemHost}."),
+                (_, _) => Task.CompletedTask);
+        }
+
+        var installer = new OllamaRuntimeInstaller(new HttpClient(), OllamaLocator.UserRuntimeDirectory);
+
+        return new ModelHostProvisioning(
+            () =>
+            {
+                var found = OllamaLocator.Locate(OllamaSearchOptions.ForMachine(AppContext.BaseDirectory));
+                return found.Found
+                    ? ModelHostState.Ready(found.Describe())
+                    : ModelHostState.Missing(
+                        "The model runtime is not installed, so the language models cannot be downloaded or run.",
+                        "Download it with the Ollama runtime row. Jane keeps its own copy and never touches an Ollama desktop app.");
+            },
+            (progress, token) => installer.InstallAsync(progress, token));
     }
 
     /// <summary>

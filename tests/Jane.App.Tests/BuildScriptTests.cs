@@ -114,6 +114,35 @@ public sealed partial class BuildScriptTests
     }
 
     [Fact]
+    public void InstallingPutsAModelRuntimeOnTheMachineOrSaysWhyItCouldNot()
+    {
+        // The field bug, as a check on the script that caused it. The published artifact had no
+        // tools\ollama and the installer did nothing about it, so an installed Jane had no model
+        // host at all -- reported to the user as two models stuck on "Not downloaded".
+        var script = File.ReadAllText(PackagingTests.FindRepoFile(Path.Combine("build", "install.ps1")));
+
+        Assert.Contains("get-ollama.ps1", script, StringComparison.Ordinal);
+        Assert.Contains(@"Jane\tools\ollama", script, StringComparison.Ordinal);
+
+        // Under the profile, not beside the binary: Program Files is a uiAccess "secure location"
+        // and the account Jane runs as cannot write to it.
+        Assert.Contains("LOCALAPPDATA", script, StringComparison.Ordinal);
+
+        // And it must not be fatal. Dictation works with no language model at all.
+        Assert.Contains("Write-Warning", script, StringComparison.Ordinal);
+        Assert.Contains("Settings -> Models", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheRuntimeFetchCanBeDeclinedBySomebodyWhoDoesNotWantTheDownload()
+    {
+        // 1.4 GB is a decision, not a default somebody should discover afterwards.
+        var script = File.ReadAllText(PackagingTests.FindRepoFile(Path.Combine("build", "install.ps1")));
+
+        Assert.Contains("$NoModelRuntime", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void SigningCanReuseAnExistingKeyRatherThanTrustingASecondRoot()
     {
         // Every update has to be re-signed, because the signature covers the binary. Without a

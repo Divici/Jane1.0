@@ -1,4 +1,5 @@
 using Jane.Core.Platform;
+using Jane.Llm;
 
 namespace Jane.Bench;
 
@@ -11,7 +12,13 @@ public sealed class JaneEnvironment
     {
         RepoRoot = repoRoot ?? FindRepoRoot();
         Paths = new JanePaths();
-        OllamaExe = Path.Combine(RepoRoot, "tools", "ollama", "ollama.exe");
+
+        // Through the same locator the app uses, so `jane doctor` reports the runtime Jane would
+        // actually start rather than the one a repository checkout happens to contain. The repo
+        // path is the fallback only so the failure message names somewhere meaningful.
+        var located = OllamaLocator.Locate(OllamaSearchOptions.ForMachine(RepoRoot));
+        OllamaExe = located.Runtime?.ExePath
+            ?? Path.Combine(RepoRoot, "tools", "ollama", "ollama.exe");
 
         var url = Environment.GetEnvironmentVariable(EnvOllamaGpuUrl);
         OllamaHost = string.IsNullOrWhiteSpace(url)

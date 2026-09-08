@@ -358,8 +358,19 @@ public sealed class FirstRunViewModel : ObservableObject, IDisposable
 
         try
         {
-            foreach (var row in Models.Where(m => !m.IsInstalled))
+            // Refreshed one at a time rather than filtered up front, because the list is ordered
+            // by dependency: installing the model runtime is what turns the two rows after it from
+            // unanswerable into downloadable, and a filter taken before the first row ran would
+            // have skipped them both.
+            foreach (var row in Models.ToList())
             {
+                await row.RefreshAsync(cancellationToken);
+
+                if (row.IsInstalled || !row.Download.CanExecute(null))
+                {
+                    continue;
+                }
+
                 await row.Download.ExecuteAsync(null);
                 RaiseModelState();
             }
@@ -596,6 +607,11 @@ public sealed class FirstRunViewModel : ObservableObject, IDisposable
     {
         yield return ModelRow.ForAsset(ModelCatalog.ParakeetV2Int8, _provisioner, required: true);
         yield return ModelRow.ForAsset(ModelCatalog.SileroVad, _provisioner, required: true);
+
+        // Before the models it runs, because it is what makes them downloadable at all. Not
+        // required: dictation works with none of this, and somebody on a metered connection
+        // should be able to skip 1.4 GB and still finish onboarding.
+        yield return ModelRow.ForHost(_provisioner);
 
         foreach (var spec in LlmModelCatalog.Required)
         {

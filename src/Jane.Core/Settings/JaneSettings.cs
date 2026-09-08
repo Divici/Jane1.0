@@ -71,6 +71,21 @@ public sealed record MicrophoneSettings(
 /// How long after the last dictation Jane issues its single explicit unload. The request-level
 /// keep_alive is shorter than this on purpose: the timer is the belt, keep_alive the braces.
 /// </param>
+/// <param name="UseSystemOllama">
+/// Talk to an Ollama the user runs themselves on the default port instead of supervising a copy.
+/// </param>
+/// <remarks>
+/// Off by default, and it should stay off for most people. Jane's own copy is a supervised child
+/// on port 11435 with keep-alive, parallelism and loaded-model count set for one dictation at a
+/// time, torn down with the process; a desktop Ollama on 11434 autostarts, auto-updates over the
+/// network and is shared with whatever else the user is running -- so Jane can neither promise the
+/// VRAM back nor promise nothing leaves the machine.
+/// <para>
+/// It exists because somebody who already runs Ollama should not be made to download a second
+/// 1.4 GB copy of the same binary and a second copy of every model. Turning it on is them saying
+/// they would rather have that than Jane's guarantees.
+/// </para>
+/// </remarks>
 public sealed record LlmSettings(
     string GpuModel = "jane-qwen3-4b",
     string CpuModel = "jane-qwen3-1.7b",
@@ -79,7 +94,8 @@ public sealed record LlmSettings(
     int NumCtx = 8192,
     int CpuNumThreads = 4,
     InGameBehaviour InGame = InGameBehaviour.SkipLlm,
-    bool Enabled = true);
+    bool Enabled = true,
+    bool UseSystemOllama = false);
 
 /// <summary>Where the pill sits when nothing is docked over it.</summary>
 public enum OverlayAnchor

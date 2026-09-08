@@ -60,7 +60,8 @@ public sealed class LlmStack : IAsyncDisposable
         var supervisor = new OllamaSupervisor(new OllamaSupervisorOptions(
             ollamaExePath,
             Host: HostFrom(settings),
-            KeepAlive: settings.Llm.KeepAlive));
+            KeepAlive: settings.Llm.KeepAlive,
+            AdoptOnly: settings.Llm.UseSystemOllama));
 
         var http = new HttpClient
         {
@@ -87,10 +88,21 @@ public sealed class LlmStack : IAsyncDisposable
         return new LlmStack(supervisor, http, client, session, governor);
     }
 
+    /// <summary>Jane's own supervised port, or the desktop app's, when the user opted into theirs.</summary>
+    public const string SupervisedHost = "127.0.0.1:11435";
+
+    /// <summary>Ollama's default. Jane only ever talks to this when explicitly told to.</summary>
+    public const string SystemHost = "127.0.0.1:11434";
+
     private static string HostFrom(JaneSettings settings)
     {
         var configured = Environment.GetEnvironmentVariable("JANE_OLLAMA_GPU_URL");
-        return string.IsNullOrWhiteSpace(configured) ? "127.0.0.1:11435" : new Uri(configured).Authority;
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            return new Uri(configured).Authority;
+        }
+
+        return settings.Llm.UseSystemOllama ? SystemHost : SupervisedHost;
     }
 
     /// <summary>

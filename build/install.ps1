@@ -19,6 +19,10 @@ param(
 
     [switch]$NoAutostart,
 
+    # Skips fetching the model runtime. Jane still dictates without it; only transcript cleanup
+    # is unavailable, and Settings -> Models can fetch it later with one click.
+    [switch]$NoModelRuntime,
+
     [switch]$Uninstall
 )
 
@@ -82,6 +86,42 @@ if (-not $NoAutostart) {
     # own autostart toggle writes the same value so the two agree.
     New-ItemProperty -Path $runKey -Name $runValue -Value "`"$installed`"" -PropertyType String -Force | Out-Null
     Write-Host "Registered autostart: $runKey\$runValue"
+}
+
+# The model runtime goes under the user profile, not next to Jane.exe. Program Files is a
+# "secure location" -- a uiAccess requirement -- so the account Jane runs as cannot write there,
+# which means Jane could never fetch or update the runtime itself if it lived beside the binary.
+# Shipping it inside the installer instead would add 1.4 GB to every download.
+#
+# This is the step whose absence produced the field report: the published build had no
+# tools\ollama, so Jane's model server never started and both language-model rows read
+# "Not downloaded" forever, next to a button that could not have worked.
+$runtimeDir = Join-Path $env:LOCALAPPDATA 'Jane\tools\ollama'
+
+if (-not $NoModelRuntime) {
+    if (Test-Path (Join-Path $runtimeDir 'ollama.exe')) {
+        Write-Host "Model runtime already present at $runtimeDir"
+    }
+    else {
+        $bundled = Join-Path $Destination 'tools\ollama\ollama.exe'
+        if (Test-Path $bundled) {
+            Write-Host "Model runtime bundled with this build; leaving it in place."
+        }
+        else {
+            Write-Host ''
+            Write-Host "Fetching the model runtime into $runtimeDir"
+            try {
+                & (Join-Path $PSScriptRoot 'get-ollama.ps1') -Destination $runtimeDir
+            }
+            catch {
+                Write-Warning @"
+The model runtime could not be downloaded: $($_.Exception.Message)
+Jane still dictates -- the recogniser emits punctuation and casing on its own. To add transcript
+cleanup later, open Settings -> Models and use the Ollama runtime row.
+"@
+            }
+        }
+    }
 }
 
 $signature = Get-AuthenticodeSignature -FilePath $installed

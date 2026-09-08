@@ -1,3 +1,4 @@
+using Jane.Core.Models;
 using Jane.Speech;
 
 namespace Jane.App.Settings;
@@ -62,6 +63,23 @@ public delegate Task<bool> LlmModelPresent(string model, CancellationToken cance
 /// 482 MB, which is not a test anybody runs.
 /// </para>
 /// </remarks>
+/// <summary>
+/// Whether the thing that runs the language models exists on this machine at all.
+/// </summary>
+/// <remarks>
+/// A separate question from whether a model is downloaded, and the reason the two were confused
+/// for months: with no runtime, "is qwen3:4b-instruct present?" is not false, it is unanswerable.
+/// The published build shipped without one and every row read "Not downloaded" as a result.
+/// </remarks>
+/// <param name="Detail">What is true right now, in a sentence. Shown on the runtime's own row.</param>
+/// <param name="Remedy">What the user can do about it. Null when there is nothing to do.</param>
+public sealed record ModelHostState(bool Available, string Detail, string? Remedy = null)
+{
+    public static ModelHostState Ready(string detail) => new(true, detail);
+
+    public static ModelHostState Missing(string detail, string remedy) => new(false, detail, remedy);
+}
+
 public interface IModelProvisioner
 {
     bool IsInstalled(ModelAsset asset);
@@ -75,6 +93,19 @@ public interface IModelProvisioner
     Task<bool> IsPulledAsync(string model, CancellationToken cancellationToken);
 
     Task PullAsync(string model, IProgress<LlmPullProgress>? progress, CancellationToken cancellationToken);
+
+    /// <summary>Whether the model runtime is present, re-read on each call.</summary>
+    ModelHostState Host { get; }
+
+    /// <summary>
+    /// Downloads and unpacks the model runtime.
+    /// </summary>
+    /// <remarks>
+    /// Here rather than behind a documentation link because the user who needs it is the one who
+    /// installed Jane from the published artifact, and has no repository checkout to run
+    /// <c>build/get-ollama.ps1</c> from.
+    /// </remarks>
+    Task InstallHostAsync(IProgress<ModelDownloadProgress>? progress, CancellationToken cancellationToken);
 }
 
 /// <summary>
@@ -85,7 +116,11 @@ public interface IModelProvisioner
 /// lives in <c>Jane.Llm</c> and owns the child process's lifetime. Handing the window a
 /// supervisor would let a settings screen restart a server; handing it two functions cannot.
 /// </remarks>
-public sealed class ModelProvisioner(ModelDownloader downloader, LlmModelPull pull, LlmModelPresent present)
+public sealed class ModelProvisioner(
+    ModelDownloader downloader,
+    LlmModelPull pull,
+    LlmModelPresent present,
+    ModelHostProvisioning host)
     : IModelProvisioner
 {
     public bool IsInstalled(ModelAsset asset) => downloader.IsInstalled(asset);
@@ -100,6 +135,30 @@ public sealed class ModelProvisioner(ModelDownloader downloader, LlmModelPull pu
 
     public Task PullAsync(string model, IProgress<LlmPullProgress>? progress, CancellationToken cancellationToken) =>
         pull(model, progress, cancellationToken);
+
+    public ModelHostState Host => host.State();
+
+    public Task InstallHostAsync(IProgress<ModelDownloadProgress>? progress, CancellationToken cancellationToken) =>
+        host.InstallAsync(progress, cancellationToken);
+}
+
+/// <summary>
+/// The model runtime's half of provisioning: is it here, and how do we get it.
+/// </summary>
+/// <remarks>
+/// Two delegates rather than a typed installer, for the same reason the Ollama pull is a delegate:
+/// the composition root owns the runtime's location and the supervised process's lifetime, and a
+/// settings window holding either could restart a server.
+/// </remarks>
+/// <param name="State">Re-evaluated on every read, because installing the runtime changes it.</param>
+public sealed record ModelHostProvisioning(
+    Func<ModelHostState> State,
+    Func<IProgress<ModelDownloadProgress>?, CancellationToken, Task> InstallAsync)
+{
+    /// <summary>For a Jane built with no LLM at all: nothing to report, nothing to install.</summary>
+    public static ModelHostProvisioning Disabled { get; } = new(
+        () => ModelHostState.Ready("Transcript cleanup is switched off in settings."),
+        (_, _) => Task.CompletedTask);
 }
 
 /// <summary>
@@ -111,7 +170,8 @@ public sealed class ModelProvisioner(ModelDownloader downloader, LlmModelPull pu
 /// absent and refuses the pull with a sentence saying that, rather than throwing something the
 /// window would have to translate.
 /// </remarks>
-public sealed class WeightsOnlyProvisioner(ModelDownloader downloader) : IModelProvisioner
+public sealed class WeightsOnlyProvisioner(ModelDownloader downloader, ModelHostProvisioning host)
+    : IModelProvisioner
 {
     public bool IsInstalled(ModelAsset asset) => downloader.IsInstalled(asset);
 
@@ -124,8 +184,13 @@ public sealed class WeightsOnlyProvisioner(ModelDownloader downloader) : IModelP
 
     public Task PullAsync(string model, IProgress<LlmPullProgress>? progress, CancellationToken cancellationToken) =>
         Task.FromException(new ModelDownloadException(
-            ModelDownloadFailure.HttpError,
-            $"Ollama is not running, so {model} cannot be pulled.  Jane still dictates without it: the raw transcript already carries punctuation and casing."));
+            ModelDownloadFailure.ServiceUnreachable,
+            $"There is no model runtime on this machine, so {model} cannot be pulled. Jane still dictates without it: the raw transcript already carries punctuation and casing."));
+
+    public ModelHostState Host => host.State();
+
+    public Task InstallHostAsync(IProgress<ModelDownloadProgress>? progress, CancellationToken cancellationToken) =>
+        host.InstallAsync(progress, cancellationToken);
 }
 
 /// <summary>

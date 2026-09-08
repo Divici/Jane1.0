@@ -4,6 +4,7 @@ using Jane.App.Composition;
 using Jane.App.Onboarding;
 using Jane.App.Settings;
 using Jane.Core.Abstractions;
+using Jane.Core.Models;
 using Jane.Speech;
 
 namespace Jane.App.Tests;

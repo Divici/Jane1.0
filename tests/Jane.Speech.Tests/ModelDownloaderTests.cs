@@ -1,6 +1,7 @@
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
+using Jane.Core.Models;
 using Jane.Speech;
 
 namespace Jane.Speech.Tests;

@@ -1,4 +1,5 @@
 using System.Net.Sockets;
+using Jane.Core.Models;
 using Jane.Speech;
 
 namespace Jane.Speech.Tests;

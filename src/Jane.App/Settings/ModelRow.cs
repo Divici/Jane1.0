@@ -2,12 +2,47 @@ using System.Globalization;
 using System.IO;
 using System.Net.Http;
 using Jane.App.Controls;
+using Jane.Core.Models;
 using Jane.Speech;
 
 namespace Jane.App.Settings;
 
 /// <param name="Stage">Ollama's or the downloader's own word for what it is doing right now.</param>
 public sealed record ModelStep(double Fraction, string Stage);
+
+/// <summary>
+/// The three things that can be true of a model, where there used to be two.
+/// </summary>
+/// <remarks>
+/// A boolean forced "I could not find out" to be reported as "it is not there", which is how a
+/// refused connection to Jane's own model runtime came to be shown as two undownloaded models next
+/// to a button that could never succeed.
+/// </remarks>
+public enum ModelAvailability
+{
+    /// <summary>Asked, and it is here.</summary>
+    Installed,
+
+    /// <summary>Asked, and it is not here. Downloading it is the remedy.</summary>
+    NotDownloaded,
+
+    /// <summary>Could not ask. Downloading is not the remedy, and is not offered.</summary>
+    Unavailable,
+}
+
+/// <param name="Reason">Why it could not be asked. Only set for <see cref="ModelAvailability.Unavailable"/>.</param>
+/// <param name="Remedy">What to do about it, when there is something.</param>
+public sealed record ModelPresence(ModelAvailability Availability, string? Reason = null, string? Remedy = null)
+{
+    public static ModelPresence Installed { get; } = new(ModelAvailability.Installed);
+
+    public static ModelPresence Missing { get; } = new(ModelAvailability.NotDownloaded);
+
+    public static ModelPresence Unavailable(string reason, string? remedy = null) =>
+        new(ModelAvailability.Unavailable, reason, remedy);
+
+    public static ModelPresence For(bool installed) => installed ? Installed : Missing;
+}
 
 /// <summary>
 /// One model in the management list: what it is, what it costs, what it is licensed under, and a
@@ -28,10 +63,10 @@ public sealed record ModelStep(double Fraction, string Stage);
 /// </remarks>
 public sealed class ModelRow : ObservableObject
 {
-    private readonly Func<CancellationToken, Task<bool>> _isPresent;
+    private readonly Func<CancellationToken, Task<ModelPresence>> _isPresent;
     private readonly Func<IProgress<ModelStep>, CancellationToken, Task> _install;
 
-    private bool _isInstalled;
+    private ModelPresence _presence = ModelPresence.Missing;
     private double _progress;
     private string _stage = string.Empty;
     private ModelDownloadException? _error;
@@ -45,7 +80,7 @@ public sealed class ModelRow : ObservableObject
         string license,
         string attribution,
         bool required,
-        Func<CancellationToken, Task<bool>> isPresent,
+        Func<CancellationToken, Task<ModelPresence>> isPresent,
         Func<IProgress<ModelStep>, CancellationToken, Task> install)
     {
         Id = id;
@@ -58,7 +93,12 @@ public sealed class ModelRow : ObservableObject
         _isPresent = isPresent;
         _install = install;
 
-        Download = new AsyncRelayCommand((_, token) => RunAsync(token), _ => !IsInstalled || Error is not null);
+        // Unavailable is deliberately not downloadable. Pulling into a runtime that does not exist
+        // fails identically every time, and offering the button is how somebody spends ten minutes
+        // clicking it.
+        Download = new AsyncRelayCommand(
+            (_, token) => RunAsync(token),
+            _ => Availability != ModelAvailability.Unavailable && (!IsInstalled || Error is not null));
     }
 
     public string Id { get; }
@@ -80,13 +120,29 @@ public sealed class ModelRow : ObservableObject
 
     public AsyncRelayCommand Download { get; }
 
+    /// <summary>Here, absent, or unaskable. The third is why this is not a boolean.</summary>
+    public ModelAvailability Availability => _presence.Availability;
+
+    /// <summary>Why the model could not be asked about. Null unless <see cref="Availability"/> says so.</summary>
+    public string? UnavailableReason => _presence.Reason;
+
     public bool IsInstalled
     {
-        get => _isInstalled;
-        private set
+        get => _presence.Availability == ModelAvailability.Installed;
+        private set => Presence = value ? ModelPresence.Installed : ModelPresence.Missing;
+    }
+
+    private ModelPresence Presence
+    {
+        get => _presence;
+        set
         {
-            if (Set(ref _isInstalled, value))
+            if (Set(ref _presence, value))
             {
+                Raise(nameof(IsInstalled));
+                Raise(nameof(Availability));
+                Raise(nameof(UnavailableReason));
+                Raise(nameof(ErrorRemedy));
                 Raise(nameof(StatusText));
                 Raise(nameof(StatusSeverity));
                 Download.RaiseCanExecuteChanged();
@@ -146,8 +202,8 @@ public sealed class ModelRow : ObservableObject
         }
     }
 
-    /// <summary>What the user can actually do about the failure. Comes from the typed exception.</summary>
-    public string? ErrorRemedy => Error?.Remedy;
+    /// <summary>What the user can actually do about it, whether it failed or was never askable.</summary>
+    public string? ErrorRemedy => Error?.Remedy ?? _presence.Remedy;
 
     /// <summary>Every download failure is retryable, and a partial download resumes where it stopped.</summary>
     public bool CanRetry => Error is not null;
@@ -186,7 +242,12 @@ public sealed class ModelRow : ObservableObject
                 return Error.Message;
             }
 
-            return IsInstalled ? "Installed" : "Not downloaded";
+            return Availability switch
+            {
+                ModelAvailability.Installed => "Installed",
+                ModelAvailability.Unavailable => UnavailableReason ?? "Cannot be checked right now",
+                _ => "Not downloaded",
+            };
         }
     }
 
@@ -203,13 +264,14 @@ public sealed class ModelRow : ObservableObject
     {
         try
         {
-            IsInstalled = await _isPresent(cancellationToken);
+            Presence = await _isPresent(cancellationToken);
         }
         catch (Exception ex) when (ex is HttpRequestException or IOException or TaskCanceledException)
         {
-            // Not being able to ask is not the same as the model being absent, but it is the
-            // safer thing to show: the row offers a download rather than claiming an install.
-            IsInstalled = false;
+            // Not being able to ask is not the same as the model being absent. Reporting it as
+            // absent is what turned "nothing is listening on 127.0.0.1:11435" into two rows
+            // reading "Not downloaded" with a button that could not have worked.
+            Presence = ModelPresence.Unavailable(ex.Message);
         }
 
         if (IsInstalled)
@@ -285,7 +347,7 @@ public sealed class ModelRow : ObservableObject
             asset.License,
             asset.Attribution,
             required,
-            _ => Task.FromResult(provisioner.IsInstalled(asset)),
+            _ => Task.FromResult(ModelPresence.For(provisioner.IsInstalled(asset))),
             (progress, token) => provisioner.EnsureAsync(
                 asset,
                 new ImmediateProgress<ModelDownloadProgress>(p => progress.Report(new ModelStep(p.Fraction, p.Stage))),
@@ -306,10 +368,45 @@ public sealed class ModelRow : ObservableObject
             spec.License,
             spec.Attribution,
             required,
-            token => provisioner.IsPulledAsync(spec.Tag, token),
+            async token =>
+            {
+                // Asked first, because with no runtime the pull probe is a connection to a port
+                // nobody is listening on -- which answers "no" and means "cannot say".
+                var host = provisioner.Host;
+                return host.Available
+                    ? ModelPresence.For(await provisioner.IsPulledAsync(spec.Tag, token))
+                    : ModelPresence.Unavailable(host.Detail, host.Remedy);
+            },
             (progress, token) => provisioner.PullAsync(
                 spec.Tag,
                 new ImmediateProgress<LlmPullProgress>(p => progress.Report(new ModelStep(p.Fraction, p.Status))),
+                token));
+    }
+
+    /// <summary>
+    /// A row for the model runtime itself.
+    /// </summary>
+    /// <remarks>
+    /// The runtime is listed alongside the models rather than hidden behind a settings link,
+    /// because "the thing that runs the models is missing" and "a model is missing" are the same
+    /// problem to the person looking at the list, and the fix has to be in the place the problem
+    /// is shown. It is not <see cref="Required"/>: dictation works without any of it.
+    /// </remarks>
+    public static ModelRow ForHost(IModelProvisioner provisioner)
+    {
+        ArgumentNullException.ThrowIfNull(provisioner);
+
+        return new ModelRow(
+            "ollama-runtime",
+            "Ollama runtime",
+            "Runs the language models that clean up transcripts. Jane supervises its own copy on port 11435 and never touches an Ollama desktop app on 11434.",
+            "1.4 GB",
+            "MIT",
+            "Ollama by Ollama Inc. Licensed MIT. Jane bundles the standalone release archive, not the desktop package.",
+            required: false,
+            _ => Task.FromResult(ModelPresence.For(provisioner.Host.Available)),
+            (progress, token) => provisioner.InstallHostAsync(
+                new ImmediateProgress<ModelDownloadProgress>(p => progress.Report(new ModelStep(p.Fraction, p.Stage))),
                 token));
     }
 

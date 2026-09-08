@@ -10,6 +10,7 @@ using Jane.App.Settings;
 using Jane.Core.Abstractions;
 using Jane.Core.History;
 using Jane.Core.Instructions;
+using Jane.Core.Models;
 using Jane.Core.Platform;
 using Jane.Core.Settings;
 using Jane.Core.Storage;
@@ -569,6 +570,20 @@ internal sealed class FakeProvisioner : IModelProvisioner
 
     public List<string> Calls { get; } = [];
 
+    /// <summary>What the runtime probe reports. Defaults to a machine that has one.</summary>
+    public ModelHostState Host { get; set; } = ModelHostState.Ready("Model runtime present.");
+
+    /// <summary>Set to make the presence probe throw, as an unreachable server does.</summary>
+    public Exception? PresenceThrows { get; set; }
+
+    public Task InstallHostAsync(IProgress<ModelDownloadProgress>? progress, CancellationToken cancellationToken)
+    {
+        Calls.Add("install-host");
+        progress?.Report(new ModelDownloadProgress("ollama-runtime", 1, 1, "installed"));
+        Host = ModelHostState.Ready("Model runtime present.");
+        return Task.CompletedTask;
+    }
+
     public bool IsInstalled(ModelAsset asset) => _installed.Contains(asset.Id);
 
     public async Task EnsureAsync(
@@ -598,7 +613,9 @@ internal sealed class FakeProvisioner : IModelProvisioner
     }
 
     public Task<bool> IsPulledAsync(string model, CancellationToken cancellationToken) =>
-        Task.FromResult(_pulled.Contains(model));
+        PresenceThrows is { } ex
+            ? Task.FromException<bool>(ex)
+            : Task.FromResult(_pulled.Contains(model));
 
     public async Task PullAsync(string model, IProgress<LlmPullProgress>? progress, CancellationToken cancellationToken)
     {
