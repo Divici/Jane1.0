@@ -118,6 +118,33 @@ Sources: https://code.claude.com/docs/en/voice-dictation.md and https://code.cla
 
 ---
 
+## Status — implemented 2026-09-08
+
+All four tasks are implemented, on branch `field-fixes`, one commit each. Suites: Core 297,
+Windows 247, App 197, Speech 51, Llm 39 — all passing, `dotnet format --verify-no-changes` clean.
+
+| Task | State |
+|------|-------|
+| 3 step 0 — file log | Done. `FileLog` in `Jane.Core`, one structured line per dictation, tray "Open log folder", startup failures logged |
+| 1 — onboarding replay | Done. `JaneHost` no longer holds a `SettingsStore`; `StartupPolicy` is tested; a structural test keeps the field deleted |
+| 2 — Ollama runtime | Done. `OllamaLocator`, in-app `OllamaRuntimeInstaller`, three-state `ModelAvailability`, runtime as its own model row, `install.ps1` fetch, doctor probe, opt-in system Ollama |
+| 4 — clipped first word | Done. `Prepare`/`Start`/`Stop` split, warm-but-stopped client, ducking opt-out, 1 s pre-roll cleared on pause, 300 ms VAD leading pad, latency probe |
+| 3 steps 2–3 — Notepad dots | Fixes done. Guaranteed chord release plus post-injection sweep, evidence-based clipboard settle, Notepad on the Unicode path, symmetric Escape swallowing, VAD-segmented long audio |
+
+**Not done, and why.**
+
+- **Task 3 step 1, the manual reproduction.** It needs a person dictating into Notepad for a minute
+  with the new log running. Every fix in step 2 stands on its own and is independently tested, but
+  which one actually produced the dots is still unconfirmed. The log now records strategy, modifier
+  state at both ends, records accepted over records sent, and the settle branch, so one more report
+  answers it.
+- **One correction to the plan's diagnosis.** The bound key is never swallowed by the hook — only
+  Escape is, and only while a dictation is live. The asymmetry was real but in Escape: the down was
+  hidden and the up delivered. Fixed as described; the bound key is untouched and a test pins that.
+- **Step 6, the install.** `build/publish.ps1` runs clean and the artifact is in `artifacts/publish`.
+  `install.ps1` requires elevation, stops the running Jane, and now downloads the 1.4 GB model
+  runtime, so it is left for the user to run.
+
 ## Order and dependencies
 
 1. Task 3 Step 0 (file log) first — every other task's verification reads it.
