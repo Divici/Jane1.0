@@ -75,8 +75,11 @@ public sealed class WindowLauncher(JaneHost host)
             host.MicrophoneCheck,
             host.TestDictationAsync);
 
+        // Read back through the same repository the wizard wrote to. It used to be read from the
+        // JSON settings file instead, which the wizard has never written -- so onboarding reported
+        // itself unfinished the moment it finished.
         var completed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        window.Closed += (_, _) => completed.TrySetResult(host.Settings.OnboardingComplete);
+        window.Closed += (_, _) => completed.TrySetResult(host.Settings2.Read().OnboardingComplete);
 
         window.Show();
         return await completed.Task;

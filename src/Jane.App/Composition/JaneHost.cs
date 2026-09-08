@@ -35,7 +35,6 @@ namespace Jane.App.Composition;
 public sealed class JaneHost : IAsyncDisposable
 {
     private readonly Dispatcher _dispatcher;
-    private readonly SettingsStore _settings;
     private readonly WasapiCapture _capture;
     private readonly ISpeechRecognizer _recognizer;
     private readonly SileroVadGate _vad;
@@ -70,7 +69,6 @@ public sealed class JaneHost : IAsyncDisposable
 
     private JaneHost(
         Dispatcher dispatcher,
-        SettingsStore settings,
         WasapiCapture capture,
         ISpeechRecognizer recognizer,
         SileroVadGate vad,
@@ -101,7 +99,6 @@ public sealed class JaneHost : IAsyncDisposable
         Instructions = instructions;
         History = history;
         _dispatcher = dispatcher;
-        _settings = settings;
         _capture = capture;
         _recognizer = recognizer;
         _vad = vad;
@@ -281,7 +278,16 @@ public sealed class JaneHost : IAsyncDisposable
         RefreshOverlay(Orchestrator.Status);
     }
 
-    public JaneSettings Settings => _settings.Current;
+    /// <summary>
+    /// The settings Jane is actually running on.
+    /// </summary>
+    /// <remarks>
+    /// The database, and only the database. This property used to return the Phase 1 JSON file,
+    /// which nothing has written since settings moved into SQLite -- so onboarding wrote its
+    /// completion flag to one place and every subsequent launch read another, and the first-run
+    /// wizard reappeared on every boot for months. The file no longer exists as a field here.
+    /// </remarks>
+    public JaneSettings Settings => Settings2.Current;
 
     /// <summary>Reports startup progress so the tray tooltip can say "starting" rather than lying.</summary>
     public bool IsReady { get; private set; }
@@ -337,15 +343,17 @@ public sealed class JaneHost : IAsyncDisposable
             .Add("version", typeof(JaneHost).Assembly.GetName().Version?.ToString())
             .Add("home", paths.Root));
 
-        var settings = new SettingsStore(paths);
-        settings.StartWatching();
+        // The JSON file is a bench-result inbox and nothing else. It is read once, below, and
+        // closed here rather than being held for the process lifetime: keeping it around is what
+        // let JaneHost.Settings answer from it for months after settings moved into SQLite.
+        using var benchFile = new SettingsStore(paths);
 
         // Settings, dictionary, instructions and history all live in one SQLite file. Opened
         // first, because it holds the settings everything below is composed from -- see
         // ReadStartupSettings for why the database rather than the file.
         var database = JaneDatabase.Open(paths);
         var settingsRepository = new SettingsRepository(database);
-        var current = ReadStartupSettings(settings, settingsRepository);
+        var current = ReadStartupSettings(benchFile, settingsRepository);
 
         if (current.BenchmarkedAt != settingsRepository.Current.BenchmarkedAt)
         {
@@ -457,8 +465,15 @@ public sealed class JaneHost : IAsyncDisposable
                     token),
                 (model, token) => llm.Puller.IsPresentAsync(model, token));
 
+        log.Write(LogLevel.Info, "startup", "Dictation graph composed.", LogFields.New()
+            .Add("engine", current.Speech.EngineId)
+            .Add("llm", llm is null ? null : current.Llm.GpuModel)
+            .Add("hotkey", current.Hotkey.Mode)
+            .Add("mic", current.Microphone.Activation)
+            .Add("onboarded", current.OnboardingComplete));
+
         return new JaneHost(
-            dispatcher, settings, capture, recognizer, vad, hotkeys, orchestrator, overlay, llm,
+            dispatcher, capture, recognizer, vad, hotkeys, orchestrator, overlay, llm,
             database, dictionary, instructions, history, uia, focus, injector,
             settingsRepository, provisioner, log);
     }
@@ -641,7 +656,7 @@ public sealed class JaneHost : IAsyncDisposable
         _context.Dispose();
         _vad.Dispose();
         _database.Dispose();
-        _settings.Dispose();
+
     }
 }
 

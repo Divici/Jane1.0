@@ -554,6 +554,16 @@ internal sealed class FakeProvisioner : IModelProvisioner
     /// <summary>Set to make the next call throw. Cleared by the caller to simulate a retry.</summary>
     public ModelDownloadException? FailWith { get; set; }
 
+    /// <summary>
+    /// Set to fail only the language-model pulls, leaving the speech weights working.
+    /// </summary>
+    /// <remarks>
+    /// This is the shape of a real machine with no Ollama runtime installed: the two required
+    /// models download over HTTPS like anything else, and every pull fails because there is no
+    /// server to pull into.
+    /// </remarks>
+    public Exception? FailPullsWith { get; set; }
+
     /// <summary>Bytes reported as already on disk, so a resumed download can be asserted.</summary>
     public Dictionary<string, long> AlreadyDownloaded { get; } = new(StringComparer.Ordinal);
 
@@ -594,6 +604,11 @@ internal sealed class FakeProvisioner : IModelProvisioner
     {
         Calls.Add("pull:" + model);
         await Task.Yield();
+
+        if (FailPullsWith is not null)
+        {
+            throw FailPullsWith;
+        }
 
         if (FailWith is not null)
         {

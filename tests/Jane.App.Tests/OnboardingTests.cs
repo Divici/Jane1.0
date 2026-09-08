@@ -1,5 +1,6 @@
 using System.Net;
 using System.Security.Cryptography;
+using Jane.App.Composition;
 using Jane.App.Onboarding;
 using Jane.App.Settings;
 using Jane.Core.Abstractions;
@@ -85,6 +86,44 @@ public sealed class OnboardingTests
         Assert.True(stored.OnboardingComplete);
         Assert.Equal(0x7C, stored.Hotkey.VirtualKey);
         Assert.Equal("mic-1", stored.MicrophoneDeviceId);
+    }
+
+    [Fact]
+    public async Task OnboardingFinishesWhenTheLanguageModelsCannotBePulledAtAll()
+    {
+        // The state this machine was actually in. No Ollama runtime is installed, so every pull
+        // fails, and if that blocked the wizard the completion flag would never be written -- which
+        // would have looked exactly like the replay bug and been a second cause of it.
+        using var sta = new StaTestContext();
+        using var jane = new TempJane();
+
+        jane.Provisioner.FailPullsWith = new InvalidOperationException("No Ollama server is running.");
+
+        await sta.InvokeAsync(async () =>
+        {
+            var window = jane.OpenFirstRun();
+            var model = window.Model;
+
+            await model.GoToAsync(OnboardingStep.Models, TestContext.Current.CancellationToken);
+            await model.DownloadEverythingAsync(TestContext.Current.CancellationToken);
+
+            // The two required models are the speech weights. The language models are extras: they
+            // add transcript cleanup, and dictation works without them.
+            Assert.True(model.RequiredModelsReady);
+            Assert.True(model.CanGoNext);
+            Assert.Contains(model.Models, m => m.Error is not null);
+
+            await model.GoToAsync(OnboardingStep.Done, TestContext.Current.CancellationToken);
+            await model.FinishAsync(TestContext.Current.CancellationToken);
+
+            Assert.True(model.IsComplete);
+        });
+
+        var stored = jane.ReopenSettings();
+        Assert.True(stored.OnboardingComplete);
+        Assert.False(
+            StartupPolicy.Decide(stored, skipRequested: false).ShouldRunOnboarding,
+            "A finished wizard must not reopen on the next launch, pulls or no pulls.");
     }
 
     [Fact]

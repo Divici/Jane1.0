@@ -98,8 +98,15 @@ public partial class App : Application
             // runs before anything else. It is the only window Jane ever opens by itself.
             // A test-launched Jane must never open onboarding: it would steal the foreground and
             // stop being idle, which is the one thing the idle-footprint test is measuring.
-            if (!_host.Settings.OnboardingComplete &&
-                Environment.GetEnvironmentVariable(SkipOnboardingVariable) != "1")
+            var decision = StartupPolicy.Decide(
+                _host.Settings,
+                StartupPolicy.SkipRequested(Environment.GetEnvironmentVariable(SkipOnboardingVariable)));
+
+            _host.Log.Write(LogLevel.Info, "startup", "Onboarding decision.", LogFields.New()
+                .Add("run", decision.ShouldRunOnboarding)
+                .Add("why", decision.Reason));
+
+            if (decision.ShouldRunOnboarding)
             {
                 await _windows.RunOnboardingAsync();
             }
