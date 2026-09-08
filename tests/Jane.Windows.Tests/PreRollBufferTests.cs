@@ -40,10 +40,13 @@ public sealed class PreRollBufferTests
     }
 
     [Fact]
-    public void DefaultWindowIsFiveHundredMilliseconds()
+    public void DefaultWindowIsOneSecond()
     {
+        // Was 500 ms, sized for the gap between "started speaking" and "key registered". Widened
+        // after the field report of clipped first words: a second also covers somebody who begins
+        // speaking as they press, and it costs 64 KB.
         Assert.Equal(
-            AudioFormat.SamplesFor(TimeSpan.FromMilliseconds(500)),
+            AudioFormat.SamplesFor(TimeSpan.FromSeconds(1)),
             PreRollBuffer.ForWindow(PreRollBuffer.DefaultWindow).Capacity);
     }
 

@@ -68,10 +68,20 @@ public sealed record AudioSourceState(bool IsOpen, bool IsCapturing, string? Dev
 public enum MicrophoneActivation
 {
     /// <summary>
-    /// Default. The device is opened when the hotkey goes down and released a short while after
-    /// the dictation ends. Costs the device-open latency on a cold press -- and with it the
-    /// pre-roll, which cannot back-date audio that was never captured.
+    /// Default. Capture starts when the hotkey goes down and stops a short while after the
+    /// dictation ends.
     /// </summary>
+    /// <remarks>
+    /// The device is <em>readied</em> at launch and kept ready; only capture is on demand. That
+    /// distinction is the whole fix for the clipped first word: readying is the expensive half and
+    /// is silent -- no samples, no indicator, no profile switch -- while starting is the cheap half
+    /// and is the only part a key press pays for. Before the split, key-down paid for both and the
+    /// user was already a syllable in by the time the first sample arrived.
+    /// <para>
+    /// The pre-roll still cannot back-date audio from before the stream was started, so the second
+    /// of history it holds is only useful within the idle window, between consecutive dictations.
+    /// </para>
+    /// </remarks>
     WhileDictating,
 
     /// <summary>

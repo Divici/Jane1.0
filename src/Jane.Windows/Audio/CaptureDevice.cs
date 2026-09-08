@@ -57,7 +57,37 @@ public interface ICaptureStream : IDisposable
     /// <summary>Capture ended. A non-null argument means the device faulted or went away.</summary>
     event EventHandler<AudioDeviceException?>? Stopped;
 
+    /// <summary>
+    /// Readies the audio client without activating the endpoint. Idempotent.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the expensive half of opening a microphone -- activating the endpoint's COM object,
+    /// negotiating a format, allocating the engine buffer -- and on a Bluetooth headset it is
+    /// hundreds of milliseconds. It is also the silent half: no samples flow, the capture
+    /// indicator stays dark, and the headset stays in its stereo profile, because Windows reacts
+    /// to a stream being <em>started</em>, not to a client existing.
+    /// </para>
+    /// <para>
+    /// Separating it from <see cref="Start"/> is what lets the microphone stay off until the
+    /// hotkey goes down and still capture the first word: the cost is paid at launch, and key-down
+    /// pays only for <see cref="Start"/>.
+    /// </para>
+    /// </remarks>
+    void Prepare();
+
+    /// <summary>Activates the endpoint. Samples begin arriving. Idempotent.</summary>
     void Start();
+
+    /// <summary>
+    /// Deactivates the endpoint, keeping the client ready for the next <see cref="Start"/>.
+    /// </summary>
+    /// <remarks>
+    /// Not <see cref="IDisposable.Dispose"/>: the point is that the endpoint goes inactive -- the
+    /// headset returns to stereo, the indicator goes out -- while the part that is slow to rebuild
+    /// stays. Idempotent, and must not raise <see cref="Stopped"/>: nothing was lost.
+    /// </remarks>
+    void Stop();
 }
 
 /// <summary>Opens capture endpoints. One real implementation, one fake in the tests.</summary>
@@ -73,7 +103,7 @@ public interface ICaptureDeviceFactory
 }
 
 /// <param name="PreRoll">
-/// How much audio from before key-down is retained. 500 ms by default -- see
+/// How much audio from before key-down is retained. One second by default -- see
 /// <see cref="PreRollBuffer"/> for why the window exists at all.
 /// </param>
 /// <param name="MaxCaptureDuration">

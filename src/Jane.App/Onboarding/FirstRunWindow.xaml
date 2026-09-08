@@ -180,6 +180,11 @@
                                             Content="Listen again"
                                             AutomationProperties.Name="Reopen the microphone and listen again"
                                             Click="OnRestartMicrophone" />
+
+                                    <TextBlock Style="{StaticResource Secondary}"
+                                               Margin="0,18,0,0"
+                                               TextWrapping="Wrap"
+                                               Text="Jane does not listen between dictations. It captures while you hold the key and stops a few seconds after you let go, so a Bluetooth headset stays in stereo and nothing shows your microphone as in use. It does keep the device ready in between, which is silent and is what stops the first word of a dictation going missing. You can change this later in Settings." />
                                 </StackPanel>
                             </c:SettingsGroup>
                         </StackPanel>

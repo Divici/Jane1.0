@@ -75,6 +75,7 @@ public sealed class DoctorCommand(JaneEnvironment environment)
     private IReadOnlyList<IProbe> BuildProbes(OllamaChatClient client) =>
     [
         new MicrophoneProbe(),
+        new MicrophoneLatencyProbe(),
         new GpuProbe(),
         new DiskSpaceProbe(environment.Paths),
         new ModelDirectoryProbe(environment.Paths),

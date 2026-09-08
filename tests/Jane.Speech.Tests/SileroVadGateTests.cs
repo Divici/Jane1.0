@@ -16,9 +16,18 @@ namespace Jane.Speech.Tests;
 /// </remarks>
 public sealed class SileroVadGateTests
 {
+    /// <summary>
+    /// Symmetric padding, so the arithmetic tests below read as arithmetic.
+    /// </summary>
+    /// <remarks>
+    /// The shipped default pads the leading edge more than the trailing one, for reasons that are
+    /// about Silero's onset latency rather than about trimming. Pinning both here keeps that
+    /// question in the one test that is actually asking it.
+    /// </remarks>
     private static readonly VadOptions Options = new()
     {
         Padding = TimeSpan.FromMilliseconds(100),
+        LeadingPadding = TimeSpan.FromMilliseconds(100),
         MergeGap = TimeSpan.FromMilliseconds(300),
         MinimumUtterance = TimeSpan.FromMilliseconds(300),
     };
@@ -81,6 +90,31 @@ public sealed class SileroVadGateTests
 
         // Padding is kept, so the trimmed buffer starts 100 ms before the speech did.
         Assert.Equal(Samples(900), result.Samples.Span[0]);
+    }
+
+    [Fact]
+    public void TheLeadingEdgeIsPaddedMoreThanTheTrailingOne()
+    {
+        // One of the two causes behind the clipped-first-word report. Silero decides on 32 ms
+        // frames and needs its probability to clear the threshold, so the sample it calls the
+        // start of speech is already late -- and 100 ms of pad was not enough to cover it.
+        var defaults = new VadOptions();
+        var result = SileroVadGate.Trim(Ramp(Samples(3_000)), [Segment(1_000, 1_000)], defaults);
+
+        Assert.Equal(TimeSpan.FromMilliseconds(300), defaults.LeadingPadding);
+        Assert.Equal(Samples(700), result.LeadingTrimmedSamples);
+        Assert.Equal(Samples(1_400), result.Samples.Length);
+    }
+
+    [Fact]
+    public void AnUnsetLeadingPadFallsBackToTheSymmetricOne()
+    {
+        // The parameter is optional, so options constructed positionally by older code get the
+        // old behaviour rather than no leading pad at all.
+        var result = SileroVadGate.Trim(
+            Ramp(Samples(3_000)), [Segment(1_000, 1_000)], Options with { LeadingPadding = default });
+
+        Assert.Equal(Samples(900), result.LeadingTrimmedSamples);
     }
 
     [Fact]

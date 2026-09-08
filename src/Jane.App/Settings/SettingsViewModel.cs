@@ -282,9 +282,9 @@ public sealed class SettingsViewModel : ObservableObject, IDisposable
     public IReadOnlyList<ActivationChoice> Activations { get; } =
     [
         new(MicrophoneActivation.WhileDictating, "Only while I'm dictating",
-            "The default. Jane opens the microphone when you press the key and lets go of it a few seconds later, so nothing shows the mic as in use the rest of the time. Necessary on a Bluetooth headset: Windows drops the headset into its low-quality call mode for as long as any app holds the microphone, which quietly degrades everything else you are listening to."),
+            "The default, and the right answer for a Bluetooth headset: Windows drops a headset into its low-quality call mode for as long as any app is capturing, which quietly degrades everything else you are listening to. Jane starts capturing when you press the key and stops a few seconds after you finish. It keeps the device ready in between, which costs nothing audible and is what stops the first word going missing."),
         new(MicrophoneActivation.AlwaysOpen, "All the time",
-            "Holds the microphone open from launch. The first word of a dictation is never clipped, because Jane already has the half-second before you pressed the key. Right for a wired microphone; on a Bluetooth headset it keeps the headset in call mode permanently."),
+            "Captures from launch. Nothing to start on key-down at all, and the second before you pressed is always available. Right for a wired microphone; on a Bluetooth headset it keeps the headset in call mode permanently."),
     ];
 
     /// <summary>When Jane holds the microphone open. The Bluetooth question, in one control.</summary>

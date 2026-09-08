@@ -9,13 +9,16 @@ namespace Jane.Windows.Audio;
 /// <remarks>
 /// Four rules live here and nowhere else.
 /// <list type="bullet">
-/// <item><see cref="MicrophoneActivation"/> decides when the device is open. The default opens
-/// it on key-down and releases it a few seconds after the dictation ends, because a held-open
-/// capture stream forces a Bluetooth headset into its narrowband call profile and quietly ruins
-/// every other sound on the machine.</item>
+/// <item><see cref="MicrophoneActivation"/> decides when the device <em>captures</em>. The default
+/// starts on key-down and stops a few seconds after the dictation ends, because a running capture
+/// stream forces a Bluetooth headset into its narrowband call profile and quietly ruins every
+/// other sound on the machine. Readying the device is separate and happens at launch: it is
+/// silent, and paying for it here is what stopped the first word of every dictation going
+/// missing.</item>
 /// <item>Arming back-dates the buffer by whatever pre-roll exists, so the first word survives the
-/// tens of milliseconds between "the user started talking" and "the key registered". A cold open
-/// has no pre-roll to back-date, which is the honest cost of not holding the device.</item>
+/// tens of milliseconds between "the user started talking" and "the key registered". A stream that
+/// was stopped has no pre-roll to back-date and drops what it held, so audio from before the stop
+/// can never be spliced onto the front of the next dictation.</item>
 /// <item>A capture is capped in length and a lost device is reconnected, both without the app
 /// restarting and without the caller having to poll anything.</item>
 /// <item>Everything is swappable at runtime through <see cref="Reconfigure"/>: choosing a
@@ -49,6 +52,9 @@ public sealed class WasapiCapture : IAudioSource
     private AudioSourceState _state = new(IsOpen: false, IsCapturing: false, DeviceName: null, Error: null);
 
     private Task _armed = Task.CompletedTask;
+
+    /// <summary>Whether the endpoint is activated. Distinct from the client merely existing.</summary>
+    private bool _running;
     private bool _isCapturing;
     private int _preRollSamples;
     private CaptureStopReason? _latchedStop;
@@ -98,18 +104,31 @@ public sealed class WasapiCapture : IAudioSource
     /// </remarks>
     public Task Armed => Volatile.Read(ref _armed);
 
+    /// <summary>
+    /// Readies the microphone at startup, and under <see cref="MicrophoneActivation.AlwaysOpen"/>
+    /// starts it as well.
+    /// </summary>
+    /// <remarks>
+    /// Under the default this prepares the audio client and stops there. The endpoint stays
+    /// inactive -- no samples, no capture indicator, a Bluetooth headset still in stereo -- and
+    /// the several hundred milliseconds of driver work that used to land on key-down is paid here
+    /// instead, while the tray icon is appearing. A failure is reported through
+    /// <see cref="State"/> rather than thrown: a microphone that could not be readied must not
+    /// stop Jane starting, and the next key press retries.
+    /// </remarks>
     public async Task OpenAsync(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        // Under WhileDictating there is deliberately nothing to do here. Jane sitting in the tray
-        // must not be holding a capture stream; the device is opened when a key goes down.
-        if (Options.Activation != MicrophoneActivation.AlwaysOpen)
+        if (Options.Activation == MicrophoneActivation.AlwaysOpen)
         {
+            await OpenGuardedAsync(start: true, rethrow: true, cancellationToken).ConfigureAwait(false);
             return;
         }
 
-        await OpenGuardedAsync(rethrow: true, cancellationToken).ConfigureAwait(false);
+        var readying = OpenGuardedAsync(start: false, rethrow: false, cancellationToken);
+        Volatile.Write(ref _armed, readying);
+        await readying.ConfigureAwait(false);
     }
 
     public void Arm()
@@ -132,16 +151,33 @@ public sealed class WasapiCapture : IAudioSource
 
         Publish(_state with { IsCapturing = true });
 
-        if (_stream is null)
+        var stream = _stream;
+        if (stream is null)
         {
             // Fire and forget on purpose: this is called from the hotkey pump, which must not
             // wait on a driver. Samples are retained from the moment the device comes up.
-            Volatile.Write(ref _armed, OpenGuardedAsync(rethrow: false, CancellationToken.None));
+            Volatile.Write(ref _armed, OpenGuardedAsync(start: true, rethrow: false, CancellationToken.None));
+            return;
         }
-        else
+
+        // The prepared-client path, and the reason the first word survives. Starting an already
+        // initialised stream is a single call into the audio engine rather than the endpoint
+        // activation and format negotiation that used to happen here.
+        StartStream(stream);
+        Volatile.Write(ref _armed, Task.CompletedTask);
+    }
+
+    /// <summary>Activates a prepared stream. The ring was emptied when it was stopped.</summary>
+    private void StartStream(ICaptureStream stream)
+    {
+        if (_running)
         {
-            Volatile.Write(ref _armed, Task.CompletedTask);
+            return;
         }
+
+        stream.Start();
+        _running = true;
+        Publish(_state with { IsOpen = true, Error = null });
     }
 
     /// <summary>
@@ -183,7 +219,7 @@ public sealed class WasapiCapture : IAudioSource
                 Release();
             }
 
-            _ = OpenGuardedAsync(rethrow: false, CancellationToken.None);
+            _ = OpenGuardedAsync(start: true, rethrow: false, CancellationToken.None);
             return;
         }
 
@@ -191,6 +227,11 @@ public sealed class WasapiCapture : IAudioSource
         // open so the next dictation opens the right device -- and so a headset the user just
         // stopped using goes back to stereo now rather than at the next key press.
         Release();
+
+        // Then ready the new one, still stopped. Without this, changing microphone in settings
+        // would make the next dictation a cold open and lose its first word -- the exact bug this
+        // mode was reworked to fix, reintroduced through the one path that discards the client.
+        Volatile.Write(ref _armed, OpenGuardedAsync(start: false, rethrow: false, CancellationToken.None));
     }
 
     public CapturedAudio Stop(CaptureStopReason reason)
@@ -265,7 +306,38 @@ public sealed class WasapiCapture : IAudioSource
             return;
         }
 
-        Release();
+        Pause();
+    }
+
+    /// <summary>
+    /// Deactivates the endpoint but keeps the client ready for the next key press.
+    /// </summary>
+    /// <remarks>
+    /// This is what the idle-release timer does now. Stopping is the part a Bluetooth headset
+    /// reacts to and the part that puts out the capture indicator, so the user-visible promise --
+    /// the microphone is off between dictations -- is kept in full. What is kept back is the audio
+    /// client, whose construction is the several hundred milliseconds that used to cost the first
+    /// word of every dictation.
+    /// </remarks>
+    private void Pause()
+    {
+        _idleRelease.Change(Timeout.Infinite, Timeout.Infinite);
+
+        var stream = _stream;
+        if (stream is null || !_running)
+        {
+            return;
+        }
+
+        stream.Stop();
+        _running = false;
+
+        // Emptied here rather than at the next start, so there is no window in which the ring
+        // holds audio from before the pause. Back-dating that onto the next dictation would splice
+        // two unrelated moments into one utterance.
+        _preRoll.Clear();
+        Volatile.Write(ref _level, 0f);
+        Publish(_state with { IsOpen = false, Error = null });
     }
 
     /// <summary>Closes the stream and forgets the audio in the ring, without an error state.</summary>
@@ -284,23 +356,34 @@ public sealed class WasapiCapture : IAudioSource
         }
 
         CloseStream();
+        _running = false;
         _preRoll.Clear();
         Volatile.Write(ref _level, 0f);
         Publish(_state with { IsOpen = false, Error = null });
     }
 
-    /// <summary>Opens the device if it is not already open, publishing any failure.</summary>
-    private async Task OpenGuardedAsync(bool rethrow, CancellationToken cancellationToken)
+    /// <summary>Readies the device if it is not already, optionally starting it, publishing any failure.</summary>
+    private async Task OpenGuardedAsync(bool start, bool rethrow, CancellationToken cancellationToken)
     {
         await _openGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (_stream is not null || _disposed)
+            if (_disposed)
             {
                 return;
             }
 
-            await OpenCoreAsync(cancellationToken).ConfigureAwait(false);
+            if (_stream is { } existing)
+            {
+                if (start)
+                {
+                    StartStream(existing);
+                }
+
+                return;
+            }
+
+            await OpenCoreAsync(start, cancellationToken).ConfigureAwait(false);
         }
         catch (AudioDeviceException error)
         {
@@ -340,15 +423,25 @@ public sealed class WasapiCapture : IAudioSource
         _openGate.Dispose();
     }
 
-    private async Task OpenCoreAsync(CancellationToken cancellationToken)
+    private async Task OpenCoreAsync(bool start, CancellationToken cancellationToken)
     {
         var stream = await _devices.OpenAsync(_options.DeviceId, cancellationToken).ConfigureAwait(false);
         stream.SamplesAvailable += OnSamplesAvailable;
         stream.Stopped += OnStopped;
-        stream.Start();
+
+        // Always prepared, only sometimes started. Preparing is the slow, silent half; starting is
+        // the cheap half that a headset and a capture indicator can both notice.
+        stream.Prepare();
 
         _stream = stream;
-        Publish(new AudioSourceState(IsOpen: true, IsCapturing: false, stream.DeviceName, Error: null));
+        _running = false;
+        Publish(new AudioSourceState(
+            IsOpen: false, IsCapturing: _state.IsCapturing, stream.DeviceName, Error: null));
+
+        if (start)
+        {
+            StartStream(stream);
+        }
     }
 
     private void OnSamplesAvailable(object? sender, ReadOnlyMemory<float> samples)
@@ -494,7 +587,8 @@ public sealed class WasapiCapture : IAudioSource
                         return;
                     }
 
-                    await OpenCoreAsync(cancellationToken).ConfigureAwait(false);
+                    // The reconnect loop only runs under AlwaysOpen, where the device is meant to be live.
+                    await OpenCoreAsync(start: true, cancellationToken).ConfigureAwait(false);
                     return;
                 }
                 catch (AudioDeviceException)

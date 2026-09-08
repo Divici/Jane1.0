@@ -18,9 +18,17 @@ namespace Jane.Windows.Audio;
 /// </remarks>
 public sealed class PreRollBuffer
 {
-    /// <summary>500 ms -- long enough for the slowest key-registration path, short enough that
-    /// the leading silence it adds is trivial for the VAD to trim.</summary>
-    public static readonly TimeSpan DefaultWindow = TimeSpan.FromMilliseconds(500);
+    /// <summary>
+    /// One second.
+    /// </summary>
+    /// <remarks>
+    /// Was 500 ms, chosen to cover the gap between "the user started talking" and "the key
+    /// registered". A second also covers the case that produced the clipped-first-word report:
+    /// somebody who begins speaking as they press, on a machine where the stream takes a moment
+    /// to deliver its first buffer. It costs 16k floats -- 64 KB -- and nothing on the hot path,
+    /// and the leading silence it adds is what the voice-activity gate trims for a living.
+    /// </remarks>
+    public static readonly TimeSpan DefaultWindow = TimeSpan.FromSeconds(1);
 
     private readonly Lock _gate = new();
     private readonly float[] _ring;

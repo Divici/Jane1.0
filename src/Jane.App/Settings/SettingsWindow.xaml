@@ -205,7 +205,7 @@
                         </c:SettingsGroup>
 
                         <c:SettingsGroup Header="When Jane listens"
-                                         Description="Holding the microphone open costs more than an icon on a Bluetooth headset: Windows drops the headset into its narrowband call profile for as long as any app has the mic, and everything you play through it sounds worse until the app lets go.">
+                                         Description="Holding the microphone open costs more than an icon on a Bluetooth headset: Windows drops the headset into its narrowband call profile for as long as any app is capturing, and everything you play through it sounds worse until the app lets go. Whichever setting you choose, Jane opts out of the attenuation Windows applies to other apps while a communications microphone is live, so your music does not drop each time you dictate.">
                             <StackPanel>
                                 <c:SettingRow Header="Open the microphone">
                                     <ComboBox Style="{StaticResource JaneComboBox}"

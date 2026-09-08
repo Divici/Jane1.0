@@ -29,9 +29,21 @@ public sealed class VadModelMissingException : Exception
 /// <param name="MinSpeech">Shortest run Silero will call speech at all.</param>
 /// <param name="MinSilence">Quiet needed before Silero closes a segment.</param>
 /// <param name="Padding">
-/// Audio kept either side of the detected speech. A hard cut on the exact boundary shaves the
-/// attack off the first phoneme, which reads to the recogniser as a different word.
+/// Audio kept after the detected speech. A hard cut on the exact boundary shaves the tail off the
+/// last phoneme, which reads to the recogniser as a different word.
 /// </param>
+/// <param name="LeadingPadding">
+/// Audio kept before the detected speech, and deliberately larger than <paramref name="Padding"/>.
+/// </param>
+/// <remarks>
+/// The two ends are not symmetric, because the detector is not. Silero decides on 32 ms frames
+/// and needs the probability to clear <paramref name="Threshold"/>, so the sample it calls the
+/// start of speech is one to three frames after speech actually started -- and on a quiet onset,
+/// a soft "the" or "I", more. Trimming to that boundary plus 100 ms was still cutting into the
+/// first word, which is one of the two causes behind the clipped-first-word report; the other was
+/// the microphone opening on key-down. 300 ms costs the recogniser a fifth of a second of leading
+/// silence, which it is built to ignore.
+/// </remarks>
 /// <param name="MergeGap">
 /// Segments closer than this become one utterance. Silero splits on breaths inside a single
 /// phrase, and three 150 ms fragments would each fail <paramref name="MinimumUtterance"/>
@@ -51,7 +63,8 @@ public sealed record VadOptions(
     TimeSpan MergeGap,
     TimeSpan MinimumUtterance,
     int WindowSize,
-    int NumThreads)
+    int NumThreads,
+    TimeSpan LeadingPadding = default)
 {
     public VadOptions()
         : this(
@@ -62,7 +75,8 @@ public sealed record VadOptions(
             MergeGap: TimeSpan.FromMilliseconds(300),
             MinimumUtterance: TimeSpan.FromMilliseconds(300),
             WindowSize: 512,
-            NumThreads: 1)
+            NumThreads: 1,
+            LeadingPadding: TimeSpan.FromMilliseconds(300))
     {
     }
 }
@@ -239,9 +253,15 @@ public sealed class SileroVadGate : IDisposable
 
         // Only the ends are trimmed. Interior silence is where the full stops go: cutting a
         // one-second pause between two sentences would splice them into one run-on phrase.
-        var padding = AudioFormat.SamplesFor(options.Padding);
-        var start = Math.Max(0, merged[0].StartSample - padding);
-        var end = Math.Min(samples.Length, merged[^1].EndSample + padding);
+        //
+        // The leading pad is the larger of the two, because the detector reports a start that is
+        // already one to three 32 ms frames late -- see the remarks on VadOptions. The trailing
+        // side needs only enough to keep the last phoneme's tail.
+        var leading = AudioFormat.SamplesFor(
+            options.LeadingPadding == default ? options.Padding : options.LeadingPadding);
+        var trailing = AudioFormat.SamplesFor(options.Padding);
+        var start = Math.Max(0, merged[0].StartSample - leading);
+        var end = Math.Min(samples.Length, merged[^1].EndSample + trailing);
 
         return new VadResult(
             samples[start..end],

@@ -54,18 +54,18 @@ public sealed class CaptureTests
         await using var capture = new WasapiCapture(devices, HeldOpen);
         await capture.OpenAsync(TestContext.Current.CancellationToken);
 
-        devices.Current!.Emit(Ramp(0, AudioFormat.SampleRate)); // one second before the key press
+        devices.Current!.Emit(Ramp(0, AudioFormat.SampleRate * 2)); // two seconds before the key press
         capture.Arm();
-        devices.Current.Emit(Ramp(AudioFormat.SampleRate, Samples(200)));
+        devices.Current.Emit(Ramp(AudioFormat.SampleRate * 2, Samples(200)));
 
         var captured = capture.Stop(CaptureStopReason.Released);
 
-        Assert.Equal(Samples(500), captured.PreRollSamples);
+        Assert.Equal(Samples(1000), captured.PreRollSamples);
         var span = captured.Samples.Span;
         // The sample the device produced 300 ms before the key went down.
-        Assert.Equal(AudioFormat.SampleRate - Samples(300), span[captured.PreRollSamples - Samples(300)]);
+        Assert.Equal((AudioFormat.SampleRate * 2) - Samples(300), span[captured.PreRollSamples - Samples(300)]);
         // ...and the first sample recorded after it.
-        Assert.Equal(AudioFormat.SampleRate, span[captured.PreRollSamples]);
+        Assert.Equal(AudioFormat.SampleRate * 2, span[captured.PreRollSamples]);
     }
 
     [Fact]

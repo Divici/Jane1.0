@@ -127,7 +127,10 @@ public sealed class WasapiDeviceFactory : ICaptureDeviceFactory
         private readonly DeviceSampleConverter _converter;
         private readonly string _fallbackName;
         private byte[] _silence = [];
-        private bool _stopExpected;
+        private bool _disposing;
+        private bool _prepared;
+        private string? _prepareFailure;
+        private int _expectedStops;
 
         public WasapiCaptureStream(MMDevice? device, WasapiRecorder recorder, string fallbackName)
         {
@@ -156,11 +159,96 @@ public sealed class WasapiDeviceFactory : ICaptureDeviceFactory
 
         public event EventHandler<AudioDeviceException?>? Stopped;
 
+        /// <summary>
+        /// Everything that can be done to ready this device without activating it.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The expensive, silent half of readying a microphone has already happened by the time
+        /// this object exists: <see cref="WasapiRecorderBuilder.BuildAsync"/> resolves the
+        /// endpoint, negotiates the format and activates stream routing, which is why
+        /// <see cref="WasapiRecorder.WaveFormat"/> can be read in the constructor. Moving
+        /// <see cref="ICaptureDeviceFactory.OpenAsync"/> to startup is what takes that off the
+        /// key-down path, and it is the larger half.
+        /// </para>
+        /// <para>
+        /// The remainder -- <c>IAudioClient::Initialize</c> and the capture thread -- is private
+        /// to NAudio's <c>StartRecording</c>: <c>InitializeStandard</c> and
+        /// <c>InitializeAudioClient</c> are both private instance methods on a class whose
+        /// <c>audioClient</c> field is private too, so there is no supported seam and no
+        /// protected member to subclass. Reaching in by reflection would put a private-member
+        /// lookup on the path between a key press and a microphone, where the failure mode is
+        /// "Jane records nothing" -- not a trade worth making for the smaller half. What is left
+        /// on key-down is measured by <c>jane doctor</c> rather than asserted here.
+        /// </para>
+        /// <para>
+        /// What this does do is opt the session out of communications ducking, which has to happen
+        /// before the session goes active and therefore cannot happen anywhere else. Jane asks for
+        /// communications mode so Windows applies echo cancellation and noise suppression to the
+        /// capture, and Windows throws in a side-effect nobody asked for: while a communications
+        /// session is active it attenuates every other stream on the machine. For a dictation tool
+        /// that means music drops each time the user holds the hotkey -- part of the "it messes up
+        /// the sound of everything else" report. The processing is worth having; the ducking is not.
+        /// </para>
+        /// </remarks>
+        public void Prepare()
+        {
+            if (_prepared)
+            {
+                return;
+            }
+
+            _prepared = true;
+
+            try
+            {
+                using var enumerator = _device is null ? new MMDeviceEnumerator() : null;
+                var device = _device;
+
+                if (device is null && enumerator is not null &&
+                    !enumerator.TryGetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications, out device))
+                {
+                    return;
+                }
+
+                using var owned = _device is null ? device : null;
+                device!.AudioSessionManager.AudioSessionControl.SetDuckingPreference(true);
+            }
+            catch (Exception ex) when (ex is COMException or InvalidOperationException or NotSupportedException)
+            {
+                // Best effort. A session that would not take the preference still records fine;
+                // the only consequence is that Windows keeps turning the music down.
+                _prepareFailure = ex.Message;
+            }
+        }
+
+        /// <summary>Why the ducking opt-out did not take, if it did not. Diagnostics only.</summary>
+        public string? PrepareFailure => _prepareFailure;
+
         public void Start() => _recorder.StartRecording();
+
+        /// <summary>
+        /// Deactivates the endpoint, leaving the recorder reusable.
+        /// </summary>
+        /// <remarks>
+        /// This is what the idle-release timer does. The headset returns to stereo and the privacy
+        /// indicator goes out, because both follow the capture stream stopping -- while the
+        /// endpoint resolution and format negotiation stay done, so the next key press does not
+        /// pay for them again.
+        /// </remarks>
+        public void Stop()
+        {
+            // Counted rather than flagged: NAudio raises RecordingStopped through a captured
+            // synchronisation context, so it can arrive well after this method returns. A flag
+            // cleared in a finally would be back to false by then and this deliberate stop would
+            // be reported as a lost device.
+            Interlocked.Increment(ref _expectedStops);
+            _recorder.StopRecording();
+        }
 
         public void Dispose()
         {
-            _stopExpected = true;
+            _disposing = true;
             _recorder.DataAvailable -= OnDataAvailable;
             _recorder.RecordingStopped -= OnRecordingStopped;
             _recorder.Dispose();
@@ -194,7 +282,15 @@ public sealed class WasapiDeviceFactory : ICaptureDeviceFactory
 
         private void OnRecordingStopped(object? sender, StoppedEventArgs e)
         {
-            if (_stopExpected)
+            if (_disposing)
+            {
+                return;
+            }
+
+            // A stop Jane asked for, that stopped cleanly, is not a fault. One that asked and
+            // still came back with an exception is: the endpoint went away during the stop, and
+            // pretending otherwise would leave a dead device looking merely idle.
+            if (Interlocked.Exchange(ref _expectedStops, 0) > 0 && e.Exception is null)
             {
                 return;
             }

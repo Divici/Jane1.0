@@ -38,16 +38,20 @@ public sealed class MicrophoneActivationTests
     };
 
     [Fact]
-    public async Task StartupDoesNotOpenTheDevice()
+    public async Task StartupNeverActivatesTheEndpoint()
     {
-        // The headline of the change: Jane sitting in the tray must not be holding a capture
-        // stream, or a Bluetooth headset stays in call mode all day.
+        // The headline of the change, restated after the clipped-first-word fix: Jane sitting in
+        // the tray must not be capturing, or a Bluetooth headset stays in call mode all day. What
+        // it may do is have the device resolved and ready -- that part is silent, and paying for
+        // it here rather than on key-down is what stops the first word going missing.
         var devices = new FakeCaptureDeviceFactory();
         await using var capture = new WasapiCapture(devices, OnDemand);
 
         await capture.OpenAsync(TestContext.Current.CancellationToken);
+        await capture.Armed;
 
-        Assert.Equal(0, devices.OpenCount);
+        Assert.False(devices.Current!.IsRunning);
+        Assert.Equal(0, devices.Current.StartCount);
         Assert.False(capture.State.IsOpen);
     }
 
@@ -91,8 +95,12 @@ public sealed class MicrophoneActivationTests
     }
 
     [Fact]
-    public async Task TheDeviceIsReleasedOnceTheGraceWindowExpires()
+    public async Task TheEndpointGoesInactiveOnceTheGraceWindowExpires()
     {
+        // The user-visible promise is unchanged -- the microphone is off between dictations --
+        // but it is now kept by stopping the stream rather than by destroying the client. The
+        // headset returns to stereo and the indicator goes out either way; only the cost of the
+        // next key press differs.
         var devices = new FakeCaptureDeviceFactory();
         await using var capture = new WasapiCapture(devices, OnDemand);
         await capture.OpenAsync(TestContext.Current.CancellationToken);
@@ -102,8 +110,9 @@ public sealed class MicrophoneActivationTests
         var stream = devices.Current!;
         capture.Stop(CaptureStopReason.Released);
 
-        await WaitUntil(() => stream.IsDisposed, "the capture stream to be released");
+        await WaitUntil(() => !stream.IsRunning, "the capture stream to stop");
         Assert.False(capture.State.IsOpen);
+        Assert.False(stream.IsDisposed);
     }
 
     [Fact]
@@ -189,7 +198,9 @@ public sealed class MicrophoneActivationTests
         capture.Arm();
         await capture.Armed;
 
-        Assert.Equal("{0.0.1.00000000}.{headset}", Assert.Single(devices.Requested));
+        // The last request is the one that counts: startup readied the default device, and the
+        // reconfigure let it go and readied the chosen one.
+        Assert.Equal("{0.0.1.00000000}.{headset}", devices.Requested[^1]);
     }
 
     [Fact]
@@ -199,7 +210,8 @@ public sealed class MicrophoneActivationTests
         var devices = new FakeCaptureDeviceFactory();
         await using var capture = new WasapiCapture(devices, OnDemand);
         await capture.OpenAsync(TestContext.Current.CancellationToken);
-        Assert.Equal(0, devices.OpenCount);
+        await capture.Armed;
+        Assert.False(capture.State.IsOpen);
 
         capture.Reconfigure(new MicrophoneRouting(
             null, MicrophoneActivation.AlwaysOpen, OnDemand.IdleRelease));
