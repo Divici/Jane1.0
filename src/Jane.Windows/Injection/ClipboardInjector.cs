@@ -86,10 +86,12 @@ public sealed class ClipboardInjector : ITextInjector
             return new InjectionResult(true, InjectionStrategy.Clipboard, 0, Stopwatch.GetElapsedTime(startedAt));
         }
 
-        var abort = await _preflight.CheckAsync(target, cancellationToken).ConfigureAwait(false);
-        if (abort is { } reason)
+        var preflight = await _preflight.CheckAsync(target, cancellationToken).ConfigureAwait(false);
+        var diagnostics = preflight.Describe();
+
+        if (preflight.Abort is { } reason)
         {
-            return Failed(startedAt, reason.Failure, reason.Detail);
+            return Failed(startedAt, reason.Failure, reason.Detail, diagnostics);
         }
 
         List<ClipboardPayload> saved;
@@ -101,8 +103,11 @@ public sealed class ClipboardInjector : ITextInjector
         {
             // Never guess. If the clipboard could not be read, it cannot be put back either,
             // and pasting over an unrecoverable clipboard is worse than not injecting.
-            return Failed(startedAt, InjectionFailure.ClipboardUnavailable, ex.Message);
+            return Failed(startedAt, InjectionFailure.ClipboardUnavailable, ex.Message, diagnostics);
         }
+
+        var restored = false;
+        var settleStartedAt = Stopwatch.GetTimestamp();
 
         try
         {
@@ -112,16 +117,34 @@ public sealed class ClipboardInjector : ITextInjector
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            return Failed(startedAt, InjectionFailure.Unknown, ex.Message);
+            return Failed(startedAt, InjectionFailure.Unknown, ex.Message, diagnostics with
+            {
+                RecordsSent = PasteChordLength,
+                PasteSettle = Stopwatch.GetElapsedTime(settleStartedAt),
+                PasteSettleReason = "aborted",
+            });
         }
         finally
         {
-            Restore(saved);
+            restored = Restore(saved);
         }
 
         return new InjectionResult(
-            true, InjectionStrategy.Clipboard, text.Length, Stopwatch.GetElapsedTime(startedAt));
+            true, InjectionStrategy.Clipboard, text.Length, Stopwatch.GetElapsedTime(startedAt))
+        {
+            Diagnostics = diagnostics with
+            {
+                RecordsSent = PasteChordLength,
+                RecordsAccepted = PasteChordLength,
+                PasteSettle = Stopwatch.GetElapsedTime(settleStartedAt),
+                PasteSettleReason = "fixed-delay",
+                ClipboardRestored = restored,
+            },
+        };
     }
+
+    /// <summary>Ctrl down, V down, V up, Ctrl up.</summary>
+    private const int PasteChordLength = 4;
 
     /// <summary>
     /// Saves only the allowlisted formats, and never asks for data on anything else.
@@ -190,20 +213,26 @@ public sealed class ClipboardInjector : ITextInjector
         }
     }
 
-    private void Restore(List<ClipboardPayload> saved)
+    /// <summary>Returns whether the user got their clipboard back, for the log rather than for control flow.</summary>
+    private bool Restore(List<ClipboardPayload> saved)
     {
         try
         {
             _clipboard.SetContents(saved);
+            return true;
         }
         catch (Exception)
         {
             // The restore is the last thing that runs and there is nothing left to fall back
             // to. Letting it throw here would replace a useful injection failure with a
-            // clipboard one, and would do so from inside a finally block.
+            // clipboard one, and would do so from inside a finally block. It is recorded, though:
+            // a user whose clipboard silently emptied deserves a line naming the dictation.
+            return false;
         }
     }
 
-    private static InjectionResult Failed(long startedAt, InjectionFailure failure, string detail) =>
-        new(false, InjectionStrategy.Clipboard, 0, Stopwatch.GetElapsedTime(startedAt), failure, detail);
+    private static InjectionResult Failed(
+        long startedAt, InjectionFailure failure, string detail, InjectionDiagnostics diagnostics) =>
+        new(false, InjectionStrategy.Clipboard, 0, Stopwatch.GetElapsedTime(startedAt), failure, detail)
+        { Diagnostics = diagnostics };
 }

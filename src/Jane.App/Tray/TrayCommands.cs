@@ -22,6 +22,16 @@ public enum TrayCommand
     /// <summary>Launch with Windows. Handled inside the tray, since it is pure registry state.</summary>
     Autostart,
 
+    /// <summary>
+    /// Opens the folder holding Jane's log files.
+    /// </summary>
+    /// <remarks>
+    /// Added after four field bugs were diagnosed by reading source, because nothing Jane did was
+    /// written down anywhere. A log nobody can find is barely better than no log, and the tray is
+    /// the only part of Jane that is always reachable.
+    /// </remarks>
+    OpenLogs,
+
     Quit,
 }
 

@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.Globalization;
 using Jane.Core.Abstractions;
+using Jane.Core.Diagnostics;
 using Jane.Core.History;
 using Jane.Core.Modes;
 using Jane.Core.Text;
@@ -59,6 +61,7 @@ public sealed class DictationOrchestrator : IAsyncDisposable
     private readonly ISelectionRewriter _rewriter;
     private readonly ISubmitter? _submitter;
     private readonly OrchestratorOptions _options;
+    private readonly IJaneLog _log;
 
     private readonly SemaphoreSlim _pipelineGate = new(1, 1);
     private readonly TaskCompletionSource _engineReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -113,8 +116,10 @@ public sealed class DictationOrchestrator : IAsyncDisposable
         ISelectionRewriter? rewriter = null,
         ISubmitter? submitter = null,
         ModeSelector? modes = null,
-        UndoStack? undo = null)
+        UndoStack? undo = null,
+        IJaneLog? log = null)
     {
+        _log = log ?? NullLog.Instance;
         _context = context ?? NullContextSource.Instance;
         _modes = modes ?? new ModeSelector();
         _edit = new EditModeHandler(undo ?? new UndoStack());
@@ -283,6 +288,14 @@ public sealed class DictationOrchestrator : IAsyncDisposable
 
     private async Task RunAsync(CapturedAudio audio, CancellationToken cancellationToken)
     {
+        // Captured before the try so the log line can be written from the finally on every path,
+        // including the ones that throw. The target is copied because a second key-down during
+        // the tail of this dictation would otherwise rewrite the field before the line is built.
+        var startedAt = Stopwatch.GetTimestamp();
+        var target = _target;
+        var recognitionTime = TimeSpan.Zero;
+        InjectionResult? injection = null;
+
         try
         {
             Transition(new PipelineStatus(PipelineState.Listening));
@@ -308,6 +321,7 @@ public sealed class DictationOrchestrator : IAsyncDisposable
 
             Transition(new PipelineStatus(PipelineState.Transcribing));
             RecognitionResult recognition;
+            var recognitionStartedAt = Stopwatch.GetTimestamp();
             try
             {
                 // Deep Context terms feed contextual biasing, which Phase 1's bench measured at 88%
@@ -328,7 +342,15 @@ public sealed class DictationOrchestrator : IAsyncDisposable
                 // The user sees a designed message; the exception type belongs in the log.
                 Fail(PipelineFailure.RecognitionFailed, PipelineStatus.DefaultMessageFor(PipelineFailure.RecognitionFailed));
                 Debug.WriteLine($"Recognition failed: {ex}");
+                _log.Write(LogLevel.Error, "asr", "Recognition threw.", LogFields.New()
+                    .Add("engine", _recognizer.EngineId)
+                    .Add("exception", ex.GetType().Name)
+                    .Add("detail", ex.Message));
                 return;
+            }
+            finally
+            {
+                recognitionTime = Stopwatch.GetElapsedTime(recognitionStartedAt);
             }
 
             if (recognition.IsEmpty)
@@ -402,7 +424,7 @@ public sealed class DictationOrchestrator : IAsyncDisposable
             }
 
             Transition(new PipelineStatus(PipelineState.Injecting));
-            var injection = await _injector.InjectAsync(text, _target, cancellationToken);
+            injection = await _injector.InjectAsync(text, _target, cancellationToken);
 
             if (!injection.Succeeded)
             {
@@ -433,12 +455,85 @@ public sealed class DictationOrchestrator : IAsyncDisposable
         }
         finally
         {
+            LogDictation(target, audio, recognitionTime, injection, Stopwatch.GetElapsedTime(startedAt));
+
             // The buffer is dropped on every path, including the failing ones. Audio is never
             // retained beyond the dictation that produced it.
             _pending = null;
             Settle();
         }
     }
+
+    /// <summary>
+    /// Writes the one line that says what this dictation did.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The transcript is deliberately absent. A log is a file people mail to each other, the text
+    /// is already in a history table the user can inspect and clear, and a character count answers
+    /// every question an injection bug raises. What goes in instead is the mechanism: which
+    /// strategy ran, what the modifier gate saw, how many records Windows accepted, how long the
+    /// paste took to settle.
+    /// </para>
+    /// <para>
+    /// Written on every terminal path. A dictation that produced nothing is the case most in need
+    /// of an explanation, and the one with no history row to look at afterwards.
+    /// </para>
+    /// </remarks>
+    private void LogDictation(
+        TargetWindow target,
+        CapturedAudio audio,
+        TimeSpan recognitionTime,
+        InjectionResult? injection,
+        TimeSpan total)
+    {
+        var status = Status;
+        var diagnostics = injection?.Diagnostics ?? InjectionDiagnostics.Empty;
+        var failedInjection = injection is { Succeeded: false };
+
+        // An injection failure names itself rather than deferring to the pipeline's generic
+        // "InjectionAborted", because which of the six ways it failed is the whole question.
+        var result = failedInjection ? injection!.Failure.ToString()
+            : status.State == PipelineState.Failed ? status.Failure.ToString()
+            : status.State == PipelineState.Cancelled ? "Cancelled"
+            : "ok";
+
+        var message = status.State == PipelineState.Failed
+            ? status.Message ?? PipelineStatus.DefaultMessageFor(status.Failure)
+            : status.State == PipelineState.Cancelled ? "Cancelled before it finished."
+            : "Injected.";
+
+        _log.Write(
+            status.State == PipelineState.Failed ? LogLevel.Warning : LogLevel.Info,
+            "dictation",
+            message,
+            LogFields.New()
+                .Add("app", target.ProcessName)
+                .Add("class", target.WindowClass)
+                .Add("strategy", injection?.Strategy)
+                .Add("result", result)
+                .Add("chars", injection?.CharactersSent)
+                .Add("audio", audio.Duration)
+                .Add("preroll", AudioFormat.DurationOf(audio.PreRollSamples))
+                .Add("stop", audio.StopReason)
+                .Add("asr", recognitionTime)
+                .Add("inject", injection?.Elapsed)
+                .Add("total", total)
+                .Add("records", Records(diagnostics))
+                .Add("mods-at-start", diagnostics.ModifiersInitiallyHeld)
+                .Add("mods-held", diagnostics.ModifiersStillHeld)
+                .Add("mods-wait", diagnostics.ModifierWait)
+                .Add("settle", diagnostics.PasteSettle)
+                .Add("settle-why", diagnostics.PasteSettleReason)
+                .Add("clip-restored", diagnostics.ClipboardRestored));
+    }
+
+    private static string? Records(InjectionDiagnostics diagnostics) =>
+        diagnostics.RecordsSent == 0
+            ? null
+            : string.Create(
+                CultureInfo.InvariantCulture,
+                $"{diagnostics.RecordsAccepted}/{diagnostics.RecordsSent}");
 
     private async Task<bool> WaitForEngineAsync(CancellationToken cancellationToken)
     {

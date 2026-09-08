@@ -1,5 +1,6 @@
 using System.Net;
 using Jane.Core.Abstractions;
+using Jane.Core.Diagnostics;
 using Jane.Core.Modes;
 using Jane.Core.Pipeline;
 
@@ -13,7 +14,7 @@ internal sealed class Harness
 {
     private readonly List<PipelineState> _states = [];
 
-    public Harness(OrchestratorOptions? options = null)
+    public Harness(OrchestratorOptions? options = null, IJaneLog? log = null)
     {
         Source = new FakeAudioSource();
         Recognizer = new FakeRecognizer(this);
@@ -31,7 +32,8 @@ internal sealed class Harness
             (options ?? new OrchestratorOptions()) with { EngineReadyTimeout = TimeSpan.FromSeconds(10) },
             ContextSource,
             new FakeRewriter(this),
-            Submitter);
+            Submitter,
+            log: log);
 
         Orchestrator.StateChanged += (_, status) =>
         {
@@ -282,9 +284,17 @@ internal sealed class Harness
         {
             LastTarget = target;
 
-            if (Result is { Succeeded: false } failure)
+            // A configured result stands in for whatever the real strategy would have returned,
+            // successes included -- the diagnostics carried on a *successful* injection are the
+            // whole point of the dictation log line, so they have to be settable.
+            if (Result is { } configured)
             {
-                return Task.FromResult(failure);
+                if (configured.Succeeded)
+                {
+                    Injected.Add(text);
+                }
+
+                return Task.FromResult(configured);
             }
 
             Injected.Add(text);

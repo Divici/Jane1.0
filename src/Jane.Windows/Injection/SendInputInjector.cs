@@ -53,22 +53,30 @@ public sealed class SendInputInjector(
             return new InjectionResult(true, InjectionStrategy.Unicode, 0, Stopwatch.GetElapsedTime(startedAt));
         }
 
-        var abort = await _preflight.CheckAsync(target, cancellationToken).ConfigureAwait(false);
-        if (abort is { } reason)
+        var preflight = await _preflight.CheckAsync(target, cancellationToken).ConfigureAwait(false);
+        var diagnostics = preflight.Describe();
+
+        if (preflight.Abort is { } reason)
         {
             return new InjectionResult(
                 false, InjectionStrategy.Unicode, 0, Stopwatch.GetElapsedTime(startedAt),
-                reason.Failure, reason.Detail);
+                reason.Failure, reason.Detail)
+            { Diagnostics = diagnostics };
         }
 
         var normalised = NormaliseLineBreaks(text);
         var units = BuildUnits(normalised);
+        var sent = 0;
+        var accepted = 0;
 
         foreach (var batch in Batch(units, _options.MaxRecordsPerBatch))
         {
             cancellationToken.ThrowIfCancellationRequested();
 
             var outcome = sendInput.Send(batch);
+            sent += batch.Length;
+            accepted += (int)outcome.Accepted;
+
             if (outcome.Accepted == batch.Length)
             {
                 continue;
@@ -85,11 +93,13 @@ public sealed class SendInputInjector(
                 : $"SendInput accepted {outcome.Accepted} of {batch.Length} records (error {outcome.LastError}).";
 
             return new InjectionResult(
-                false, InjectionStrategy.Unicode, 0, Stopwatch.GetElapsedTime(startedAt), failure, detail);
+                false, InjectionStrategy.Unicode, 0, Stopwatch.GetElapsedTime(startedAt), failure, detail)
+            { Diagnostics = diagnostics with { RecordsSent = sent, RecordsAccepted = accepted } };
         }
 
         return new InjectionResult(
-            true, InjectionStrategy.Unicode, normalised.Length, Stopwatch.GetElapsedTime(startedAt));
+            true, InjectionStrategy.Unicode, normalised.Length, Stopwatch.GetElapsedTime(startedAt))
+        { Diagnostics = diagnostics with { RecordsSent = sent, RecordsAccepted = accepted } };
     }
 
     /// <summary>CRLF, lone CR and lone LF all mean one Enter press.</summary>

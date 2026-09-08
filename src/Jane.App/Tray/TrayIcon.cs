@@ -155,6 +155,7 @@ public sealed class TrayIcon : ITrayCommands, IDisposable
         menu.Items.Add(Register(TrayCommand.Settings, "Se_ttings..."));
         menu.Items.Add(Register(TrayCommand.History, "_History..."));
         menu.Items.Add(Register(TrayCommand.Autostart, "Start with _Windows"));
+        menu.Items.Add(Register(TrayCommand.OpenLogs, "Open _log folder"));
         menu.Items.Add(new Separator());
 
         menu.Items.Add(Register(TrayCommand.Quit, "_Quit Jane"));

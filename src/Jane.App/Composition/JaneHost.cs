@@ -5,6 +5,7 @@ using Jane.App.Onboarding;
 using Jane.App.Overlay;
 using Jane.App.Settings;
 using Jane.Core.Abstractions;
+using Jane.Core.Diagnostics;
 using Jane.Core.Formatting;
 using Jane.Core.History;
 using Jane.Core.Instructions;
@@ -85,8 +86,10 @@ public sealed class JaneHost : IAsyncDisposable
         IFocusTracker focus,
         ITextInjector injector,
         SettingsRepository settingsRepository,
-        IModelProvisioner provisioner)
+        IModelProvisioner provisioner,
+        FileLog log)
     {
+        Log = log;
         _context = context;
         _focus = focus;
         _injector = injector;
@@ -117,6 +120,9 @@ public sealed class JaneHost : IAsyncDisposable
 
         _fullscreenPoll = new Timer(_ => PollFullscreen(), null, Timeout.Infinite, Timeout.Infinite);
     }
+
+    /// <summary>Jane's log file. Owned here, so the tray can open its folder and doctor can read it.</summary>
+    public FileLog Log { get; }
 
     public DictationOrchestrator Orchestrator { get; }
 
@@ -322,6 +328,15 @@ public sealed class JaneHost : IAsyncDisposable
     public static JaneHost Create(Dispatcher dispatcher, IOverlayPresenter overlay)
     {
         var paths = new JanePaths();
+
+        // First, before anything that can fail. Composition itself is a source of field bugs --
+        // a missing model, an unreachable Ollama -- and a log that only starts once the graph is
+        // built cannot say why the graph was not built.
+        var log = new FileLog(paths.Logs);
+        log.Write(LogLevel.Info, "startup", "Composing the dictation graph.", LogFields.New()
+            .Add("version", typeof(JaneHost).Assembly.GetName().Version?.ToString())
+            .Add("home", paths.Root));
+
         var settings = new SettingsStore(paths);
         settings.StartWatching();
 
@@ -415,7 +430,8 @@ public sealed class JaneHost : IAsyncDisposable
             llm is null
                 ? UnavailableRewriter.Instance
                 : new LlmSelectionRewriter(llm.CreateClient(), current.Llm.GpuModel, current.Llm.NumCtx),
-            new SendInputSubmitter(sendInput));
+            new SendInputSubmitter(sendInput),
+            log: log);
 
         var hotkeys = new LowLevelKeyboardHook(
             current.Hotkey.ToBinding(),
@@ -444,7 +460,7 @@ public sealed class JaneHost : IAsyncDisposable
         return new JaneHost(
             dispatcher, settings, capture, recognizer, vad, hotkeys, orchestrator, overlay, llm,
             database, dictionary, instructions, history, uia, focus, injector,
-            settingsRepository, provisioner);
+            settingsRepository, provisioner, log);
     }
 
     /// <summary>

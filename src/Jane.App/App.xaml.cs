@@ -5,6 +5,8 @@ using Jane.App.Composition;
 using Jane.App.Overlay;
 using Jane.App.Tray;
 using Jane.Core.Abstractions;
+using Jane.Core.Diagnostics;
+using Jane.Core.Platform;
 
 namespace Jane.App;
 
@@ -107,6 +109,53 @@ public partial class App : Application
             // Startup failing must not take the process down: the tray icon stays, so the user can
             // reach settings, see the message and download whatever is missing.
             _overlay?.Show(new OverlayStatus(OverlayState.Error, DescribeStartupFailure(ex)));
+
+            // The overlay message is deliberately short and non-technical, and for a year it was
+            // the only thing Jane said about a failed start -- while itself pointing at a log that
+            // did not exist. The exception goes here, where it can be read afterwards.
+            StartupLog().Write(LogLevel.Error, "startup", "The dictation graph did not start.",
+                LogFields.New()
+                    .Add("exception", ex.GetType().FullName)
+                    .Add("detail", ex.Message)
+                    .Add("inner", ex.InnerException?.Message)
+                    .Add("stack", ex.StackTrace));
+        }
+    }
+
+    /// <summary>
+    /// A log to write to when the host is the thing that failed.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="JaneHost.Create"/> opens its own and hands it to everything it builds, but the
+    /// failure being reported here may be that very call throwing, in which case there is no host
+    /// and no log to reach through it. Opening a second one against the same directory is safe:
+    /// <see cref="FileLog"/> holds no handle between writes.
+    /// </remarks>
+    private FileLog StartupLog() => _host?.Log ?? new FileLog(new JanePaths().Logs);
+
+    /// <summary>
+    /// Shows the user the folder Jane logs into, creating it first so the window is never empty.
+    /// </summary>
+    /// <remarks>
+    /// Explorer is asked to open the directory rather than to select the file, because a rolled
+    /// log leaves several and the newest is not always the one worth reading. Nothing here can
+    /// fail loudly: if Explorer is unavailable, the menu item having done nothing visible is a
+    /// better outcome than an unhandled exception on the UI thread.
+    /// </remarks>
+    private void OpenLogFolder()
+    {
+        var directory = StartupLog().Directory;
+
+        try
+        {
+            System.IO.Directory.CreateDirectory(directory);
+            using var explorer = System.Diagnostics.Process.Start(
+                new System.Diagnostics.ProcessStartInfo(directory) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            StartupLog().Write(LogLevel.Warning, "tray", "Could not open the log folder.",
+                LogFields.New().Add("path", directory).Add("detail", ex.Message));
         }
     }
 
@@ -173,6 +222,10 @@ public partial class App : Application
 
             case TrayCommand.History:
                 _windows?.ShowHistory();
+                break;
+
+            case TrayCommand.OpenLogs:
+                OpenLogFolder();
                 break;
 
             default:
