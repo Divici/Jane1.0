@@ -97,10 +97,10 @@ public sealed class MicrophoneActivationTests
     [Fact]
     public async Task TheEndpointGoesInactiveOnceTheGraceWindowExpires()
     {
-        // The user-visible promise is unchanged -- the microphone is off between dictations --
-        // but it is now kept by stopping the stream rather than by destroying the client. The
-        // headset returns to stereo and the indicator goes out either way; only the cost of the
-        // next key press differs.
+        // The user-visible promise is unchanged -- the microphone is off between dictations. It is
+        // kept by releasing the recorder, because a capture stream is single-use and one that has
+        // been started cannot be started again. A replacement is readied straight away, so the
+        // next key press still costs only a start.
         var devices = new FakeCaptureDeviceFactory();
         await using var capture = new WasapiCapture(devices, OnDemand);
         await capture.OpenAsync(TestContext.Current.CancellationToken);
@@ -110,9 +110,13 @@ public sealed class MicrophoneActivationTests
         var stream = devices.Current!;
         capture.Stop(CaptureStopReason.Released);
 
-        await WaitUntil(() => !stream.IsRunning, "the capture stream to stop");
+        await WaitUntil(() => stream.IsDisposed, "the capture stream to be released");
+        await capture.Armed;
+
         Assert.False(capture.State.IsOpen);
-        Assert.False(stream.IsDisposed);
+        Assert.False(stream.IsRunning);
+        Assert.True(devices.Current!.IsPrepared, "a replacement must be readied for the next press");
+        Assert.False(devices.Current.IsRunning);
     }
 
     [Fact]

@@ -139,9 +139,18 @@ internal sealed class Harness
             return Task.CompletedTask;
         }
 
+        /// <summary>Set to make arming throw, as a microphone that will not start does.</summary>
+        public Exception? ArmThrows { get; set; }
+
         public void Arm()
         {
             ArmCount++;
+
+            if (ArmThrows is { } failure)
+            {
+                throw failure;
+            }
+
             State = State with { IsCapturing = true };
         }
 

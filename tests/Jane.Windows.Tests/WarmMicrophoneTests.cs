@@ -104,10 +104,66 @@ public sealed class WarmMicrophoneTests
     }
 
     [Fact]
-    public async Task TheGraceWindowStopsTheStreamButKeepsTheClientReady()
+    public async Task TheGraceWindowReleasesTheRecorderAndReadiesAFreshOne()
     {
-        // Stopping is what makes the endpoint inactive, which is what a Bluetooth headset reacts
-        // to. Keeping the client is what makes the next key press cheap.
+        // Releasing is what makes the endpoint inactive, which is what a Bluetooth headset reacts
+        // to. Readying a replacement immediately is what makes the *next* key press cheap -- and
+        // it has to be a replacement, because a recorder that has been started cannot be started
+        // again.
+        var devices = new FakeCaptureDeviceFactory();
+        await using var capture = new WasapiCapture(devices, OnDemand);
+
+        await capture.OpenAsync(TestContext.Current.CancellationToken);
+        capture.Arm();
+        await capture.Armed;
+        var first = devices.Current!;
+        _ = capture.Stop(CaptureStopReason.Released);
+
+        await WaitUntil(() => devices.OpenCount == 2);
+        await capture.Armed;
+
+        Assert.True(first.IsDisposed);
+        Assert.False(capture.State.IsOpen);
+        Assert.True(devices.Current!.IsPrepared);
+        Assert.False(devices.Current.IsRunning);
+        Assert.NotSame(first, devices.Current);
+    }
+
+    [Fact]
+    public async Task EveryDictationAfterTheFirstStillCaptures()
+    {
+        // The field report, stated as an assertion. The first dictation worked and every one after
+        // it failed with "No microphone", because the idle release stopped the recorder and the
+        // next key-down tried to start the same one again.
+        var devices = new FakeCaptureDeviceFactory();
+        await using var capture = new WasapiCapture(devices, OnDemand);
+
+        await capture.OpenAsync(TestContext.Current.CancellationToken);
+
+        for (var dictation = 1; dictation <= 3; dictation++)
+        {
+            capture.Arm();
+            await capture.Armed;
+
+            devices.Current!.Emit(Tone(AudioFormat.SamplesFor(TimeSpan.FromMilliseconds(300))));
+            var audio = capture.Stop(CaptureStopReason.Released);
+
+            Assert.True(
+                audio.Samples.Length > 0,
+                $"Dictation {dictation} captured nothing.");
+            Assert.Null(capture.State.Error);
+
+            // Let the idle window expire, which is the state change that broke the next one.
+            await WaitUntil(() => devices.OpenCount == dictation + 1);
+            await capture.Armed;
+        }
+    }
+
+    [Fact]
+    public async Task ArmingNeverThrowsWhenTheDeviceIsReleasedAndReadied()
+    {
+        // Arm() runs on the hotkey pump. An exception escaping it reaches the orchestrator as
+        // "No microphone", which is the message the user actually saw.
         var devices = new FakeCaptureDeviceFactory();
         await using var capture = new WasapiCapture(devices, OnDemand);
 
@@ -116,16 +172,16 @@ public sealed class WarmMicrophoneTests
         await capture.Armed;
         _ = capture.Stop(CaptureStopReason.Released);
 
-        await WaitUntil(() => !devices.Current!.IsRunning);
+        await WaitUntil(() => devices.OpenCount == 2);
+        await capture.Armed;
 
-        Assert.False(devices.Current!.IsRunning);
-        Assert.False(devices.Current.IsDisposed);
-        Assert.True(devices.Current.IsPrepared);
-        Assert.Equal(1, devices.OpenCount);
+        var exception = Record.Exception(capture.Arm);
+
+        Assert.Null(exception);
     }
 
     [Fact]
-    public async Task AStoppedStreamThrowsAwayItsPreRollSoNothingStaleIsBackDated()
+    public async Task AReleasedStreamThrowsAwayItsPreRollSoNothingStaleIsBackDated()
     {
         // A ring holding the tail of the previous dictation would splice minutes-old audio onto
         // the front of the next one -- a far stranger transcript than a missing syllable.
@@ -138,7 +194,8 @@ public sealed class WarmMicrophoneTests
         devices.Current!.Emit(Tone(AudioFormat.SamplesFor(TimeSpan.FromMilliseconds(200))));
         _ = capture.Stop(CaptureStopReason.Released);
 
-        await WaitUntil(() => !devices.Current!.IsRunning);
+        await WaitUntil(() => devices.OpenCount == 2);
+        await capture.Armed;
 
         capture.Arm();
         await capture.Armed;
@@ -203,6 +260,106 @@ public sealed class WarmMicrophoneTests
         Assert.Equal("mic-2", devices.Requested[^1]);
         Assert.True(devices.Current!.IsPrepared);
         Assert.False(devices.Current.IsRunning);
+    }
+
+    [Fact]
+    public async Task AStartThatIsRefusedCostsOneReopenRatherThanEveryDictation()
+    {
+        // The shape of the regression, generalised. Whatever makes a start fail, it must not leave
+        // an unusable stream in place for every later key press -- which is what turned one driver
+        // quirk into "No microphone" until Jane was restarted.
+        var devices = new FakeCaptureDeviceFactory { FailStartsForFirstStreams = 1 };
+        await using var capture = new WasapiCapture(devices, OnDemand);
+
+        await capture.OpenAsync(TestContext.Current.CancellationToken);
+        capture.Arm();
+        await capture.Armed;
+
+        await WaitUntil(() => devices.Current!.IsRunning);
+
+        devices.Current!.Emit(Tone(AudioFormat.SamplesFor(TimeSpan.FromMilliseconds(300))));
+        var audio = capture.Stop(CaptureStopReason.Released);
+
+        Assert.True(audio.Samples.Length > 0, "The reopened device must still capture this dictation.");
+        Assert.Null(capture.State.Error);
+        Assert.Equal(2, devices.OpenCount);
+    }
+
+    [Fact]
+    public async Task ADeviceThatNeverStartsReportsTheDriversOwnWords()
+    {
+        // "No microphone. Check Settings > System > Sound > Input." was the message, and it hid
+        // the one sentence that named the bug. Whatever the driver says has to survive.
+        var devices = new FakeCaptureDeviceFactory { FailStartsForFirstStreams = int.MaxValue };
+        await using var capture = new WasapiCapture(devices, OnDemand);
+
+        await capture.OpenAsync(TestContext.Current.CancellationToken);
+        capture.Arm();
+        await capture.Armed;
+
+        await WaitUntil(() => capture.State.Error is not null);
+
+        Assert.Contains("refused to start", capture.State.Error!, StringComparison.Ordinal);
+        Assert.False(capture.State.IsOpen);
+    }
+
+    [Fact]
+    public async Task ADeviceThatNeverStartsIsRebuiltOnceRatherThanForever()
+    {
+        // The rebuild is a recovery, not a retry loop. Without a ceiling, a device that is simply
+        // unavailable would have Jane opening and failing against the audio engine as fast as it
+        // can, which is worse than the message it is trying to avoid showing.
+        var devices = new FakeCaptureDeviceFactory { FailStartsForFirstStreams = int.MaxValue };
+        await using var capture = new WasapiCapture(devices, OnDemand);
+
+        await capture.OpenAsync(TestContext.Current.CancellationToken);
+        capture.Arm();
+        await capture.Armed;
+        await WaitUntil(() => capture.State.Error is not null);
+
+        // One readying at launch, then one rebuild for this key press. No more.
+        Assert.Equal(2, devices.OpenCount);
+
+        await Task.Delay(120, TestContext.Current.CancellationToken);
+        Assert.Equal(2, devices.OpenCount);
+    }
+
+    [Fact]
+    public async Task ThePressAfterAFailureStillGetsItsOwnAttempt()
+    {
+        // A device that failed once must not leave Jane refusing to try again: the next key press
+        // is a retry the user asked for.
+        var devices = new FakeCaptureDeviceFactory { FailStartsForFirstStreams = 2 };
+        await using var capture = new WasapiCapture(devices, OnDemand);
+
+        await capture.OpenAsync(TestContext.Current.CancellationToken);
+        capture.Arm();
+        await capture.Armed;
+        await WaitUntil(() => capture.State.Error is not null);
+        _ = capture.Stop(CaptureStopReason.Released);
+
+        capture.Arm();
+        await capture.Armed;
+        await WaitUntil(() => devices.Current!.IsRunning);
+
+        Assert.Null(capture.State.Error);
+        Assert.True(capture.State.IsOpen);
+    }
+
+    [Fact]
+    public async Task ARefusedStartNeverThrowsOutOfArming()
+    {
+        // Arm() runs on the hotkey pump. Anything that escapes it becomes a failed dictation with
+        // a message that describes the wrong problem.
+        var devices = new FakeCaptureDeviceFactory { FailStartsForFirstStreams = int.MaxValue };
+        await using var capture = new WasapiCapture(devices, OnDemand);
+
+        await capture.OpenAsync(TestContext.Current.CancellationToken);
+
+        var exception = Record.Exception(capture.Arm);
+        await capture.Armed;
+
+        Assert.Null(exception);
     }
 
     [Fact]

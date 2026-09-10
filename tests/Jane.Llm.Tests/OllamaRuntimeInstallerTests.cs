@@ -51,11 +51,14 @@ public sealed class OllamaRuntimeInstallerTests
         // complaint that made "the Download button does nothing" the way this was reported.
         using var temp = new TempFolder();
         var archive = ZipContaining(("ollama.exe", new string('x', 40_000)));
-        var steps = new List<ModelDownloadProgress>();
+        // Collected on the reporting thread. Progress<T> posts to the captured synchronisation
+        // context, so a report raised just before the last await can arrive after this method has
+        // already read the list -- which made this test fail perhaps one run in ten, on whichever
+        // stage lost the race.
+        var steps = new SynchronousProgress<ModelDownloadProgress>();
 
         var installer = NewInstaller(temp, archive, Sha256Of(archive));
-        await installer.InstallAsync(
-            new Progress<ModelDownloadProgress>(steps.Add), TestContext.Current.CancellationToken);
+        await installer.InstallAsync(steps, TestContext.Current.CancellationToken);
 
         Assert.Contains(steps, s => s.Stage == "downloading");
         Assert.Contains(steps, s => s.Stage == "verifying");
@@ -228,6 +231,41 @@ public sealed class OllamaRuntimeInstallerTests
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken) =>
             Task.FromException<HttpResponseMessage>(exception);
+    }
+
+    /// <summary>An <see cref="IProgress{T}"/> that records on the thread that reported.</summary>
+    private sealed class SynchronousProgress<T> : IProgress<T>, IEnumerable<T>
+    {
+        private readonly List<T> _reports = [];
+
+        public void Report(T value)
+        {
+            lock (_reports)
+            {
+                _reports.Add(value);
+            }
+        }
+
+        public T this[Index index]
+        {
+            get
+            {
+                lock (_reports)
+                {
+                    return _reports[index];
+                }
+            }
+        }
+
+        public IEnumerator<T> GetEnumerator()
+        {
+            lock (_reports)
+            {
+                return _reports.ToList().GetEnumerator();
+            }
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
     }
 
     private sealed class TempFolder : IDisposable

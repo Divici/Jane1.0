@@ -76,18 +76,27 @@ public interface ICaptureStream : IDisposable
     /// </remarks>
     void Prepare();
 
-    /// <summary>Activates the endpoint. Samples begin arriving. Idempotent.</summary>
-    void Start();
-
     /// <summary>
-    /// Deactivates the endpoint, keeping the client ready for the next <see cref="Start"/>.
+    /// Activates the endpoint. Samples begin arriving. Callable <b>once</b> per stream.
     /// </summary>
     /// <remarks>
-    /// Not <see cref="IDisposable.Dispose"/>: the point is that the endpoint goes inactive -- the
-    /// headset returns to stereo, the indicator goes out -- while the part that is slow to rebuild
-    /// stays. Idempotent, and must not raise <see cref="Stopped"/>: nothing was lost.
+    /// <para>
+    /// A stream is single-use, and that is a property of the hardware rather than a simplification.
+    /// NAudio's <c>StopRecording</c> leaves the underlying <c>IAudioClient</c> initialised while
+    /// its <c>StartRecording</c> initialises unconditionally, so a second start fails with
+    /// <c>AUDCLNT_E_ALREADY_INITIALIZED</c>. Measured on real hardware, both with default-device
+    /// routing and with an explicit endpoint id.
+    /// </para>
+    /// <para>
+    /// There is deliberately no <c>Stop</c> alongside this. One existed, promising to deactivate
+    /// the endpoint while leaving the client reusable; no implementation could honour the second
+    /// half, and the result was that every dictation after the first idle release failed with
+    /// "No microphone". Deactivating means <see cref="IDisposable.Dispose"/> and building another,
+    /// which is what <c>WasapiCapture</c> does at the end of its idle window -- off the key-down
+    /// path, where the cost is invisible.
+    /// </para>
     /// </remarks>
-    void Stop();
+    void Start();
 }
 
 /// <summary>Opens capture endpoints. One real implementation, one fake in the tests.</summary>

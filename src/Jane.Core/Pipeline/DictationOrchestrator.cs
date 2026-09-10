@@ -267,6 +267,17 @@ public sealed class DictationOrchestrator : IAsyncDisposable
         catch (Exception ex)
         {
             _pipelineGate.Release();
+
+            // Logged as well as shown. Every dictation that failed this way left no line at all,
+            // so a log covering two days of a broken microphone recorded one success per launch
+            // and nothing else -- and the exception that named the cause was never written down.
+            _log.Write(LogLevel.Warning, "dictation", DescribeDeviceFailure(ex), LogFields.New()
+                .Add("result", PipelineFailure.NoMicrophone)
+                .Add("app", _target.ProcessName)
+                .Add("exception", ex.GetType().FullName)
+                .Add("detail", ex.Message)
+                .Add("inner", ex.InnerException?.Message));
+
             Fail(PipelineFailure.NoMicrophone, DescribeDeviceFailure(ex));
         }
     }
@@ -644,10 +655,21 @@ public sealed class DictationOrchestrator : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Says what actually went wrong with the microphone, in the words of whatever reported it.
+    /// </summary>
+    /// <remarks>
+    /// This used to substitute a generic "No microphone. Check Settings > System > Sound > Input."
+    /// for any exception whose type name did not happen to contain "Device". The exception that
+    /// broke every dictation after the first said "The audio client is already initialized" --
+    /// one line that would have named the bug -- and it was replaced with advice to go and look
+    /// at a sound setting that was perfectly fine. A message the user cannot act on is bad; one
+    /// that sends them somewhere irrelevant is worse.
+    /// </remarks>
     private static string DescribeDeviceFailure(Exception ex) =>
-        ex.GetType().Name.Contains("Device", StringComparison.OrdinalIgnoreCase)
-            ? ex.Message
-            : PipelineStatus.DefaultMessageFor(PipelineFailure.NoMicrophone);
+        string.IsNullOrWhiteSpace(ex.Message)
+            ? PipelineStatus.DefaultMessageFor(PipelineFailure.NoMicrophone)
+            : ex.Message;
 
     /// <summary>The undo stack, so a focus change can clear it.</summary>
     public UndoStack UndoStack => _edit.Undo;

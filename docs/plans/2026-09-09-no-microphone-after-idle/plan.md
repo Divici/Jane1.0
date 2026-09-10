@@ -133,6 +133,33 @@ paragraph must add that NAudio's recorder is single-use, so the design is "readi
 rebuilt after every pause", not "stopped and restarted". `WasapiCaptureStream` loses the comment
 claiming restart is supported.
 
+## Status — implemented 2026-09-10
+
+All five tasks are done on branch `field-fixes`. Suites: Core 299, Windows 257 (4 skipped, all
+pre-existing desktop-dependent GPU tests), App 197, Speech 51, Llm 39 — every one passing, and
+`dotnet format --verify-no-changes` clean.
+
+**A second hardware defect turned up during Task 4 and had to be fixed too.** Disposing a recorder
+that is still capturing never returns: open, prepare and start each came back in under 20 ms on the
+same Jabra Link 380, and `Dispose` hung indefinitely. Since the fix releases the recorder at every
+idle release, that would have parked a thread-pool thread permanently on every dictation — invisible
+to any test, and met by the user as Jane gradually seizing up. `WasapiCaptureStream.Dispose` now
+stops, waits for the capture thread to reach `Stopped` (about 30 ms), and then disposes, with a
+one-second ceiling so an unplugged device cannot block the timer for good.
+
+The fix was verified on the real device rather than only against fakes:
+
+| Measurement | Before | After |
+|---|---|---|
+| Second start on the same recorder | `CoreAudioException: already initialized` | not attempted; a fresh recorder is built |
+| Rebuilt device open | — | 1.9 ms |
+| Rebuilt device start | — | 11.6 ms, against a 50 ms budget |
+| Release of a capturing recorder | never returned | ~20 ms |
+
+An unrelated flaky test was fixed in passing: `ProgressIsReportedWhileDownloadingAndWhileUnpacking`
+collected through `Progress<T>`, which posts asynchronously, so a report could arrive after the
+assertion read the list. It now collects synchronously; ran five times clean.
+
 ## Verify
 
 Reinstall (`sign-uiaccess.ps1`, then elevated `install.ps1`). Dictate three times with more than ten

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Jane.Core.Abstractions;
 using NAudio.CoreAudioApi;
@@ -122,6 +123,11 @@ public sealed class WasapiDeviceFactory : ICaptureDeviceFactory
 
     private sealed class WasapiCaptureStream : ICaptureStream
     {
+        /// <summary>Measured at ~63 ms on real hardware; a generous ceiling on a rare path.</summary>
+        private static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(1);
+
+        private static readonly TimeSpan StopPollInterval = TimeSpan.FromMilliseconds(5);
+
         private readonly MMDevice? _device;
         private readonly WasapiRecorder _recorder;
         private readonly DeviceSampleConverter _converter;
@@ -130,7 +136,6 @@ public sealed class WasapiDeviceFactory : ICaptureDeviceFactory
         private bool _disposing;
         private bool _prepared;
         private string? _prepareFailure;
-        private int _expectedStops;
 
         public WasapiCaptureStream(MMDevice? device, WasapiRecorder recorder, string fallbackName)
         {
@@ -225,34 +230,66 @@ public sealed class WasapiDeviceFactory : ICaptureDeviceFactory
         /// <summary>Why the ducking opt-out did not take, if it did not. Diagnostics only.</summary>
         public string? PrepareFailure => _prepareFailure;
 
+        /// <summary>
+        /// Activates the endpoint. Once per stream -- see <see cref="ICaptureStream.Start"/>.
+        /// </summary>
+        /// <remarks>
+        /// There is no matching stop. NAudio's <c>StopRecording</c> leaves the <c>IAudioClient</c>
+        /// initialised and <c>StartRecording</c> initialises again unconditionally, so the second
+        /// start throws <c>AUDCLNT_E_ALREADY_INITIALIZED</c>. A stop that promised otherwise lived
+        /// here briefly, and cost every dictation after the first idle release.
+        /// </remarks>
         public void Start() => _recorder.StartRecording();
 
         /// <summary>
-        /// Deactivates the endpoint, leaving the recorder reusable.
+        /// Stops the capture, waits for its thread to leave, and only then tears the client down.
         /// </summary>
         /// <remarks>
-        /// This is what the idle-release timer does. The headset returns to stereo and the privacy
-        /// indicator goes out, because both follow the capture stream stopping -- while the
-        /// endpoint resolution and format negotiation stay done, so the next key press does not
-        /// pay for them again.
+        /// <para>
+        /// The order is not incidental. Disposing a recorder that is still running blocks
+        /// indefinitely -- measured on a Jabra Link 380, where <c>open</c>, <c>prepare</c> and
+        /// <c>start</c> each returned in under 20 ms and <c>Dispose</c> never returned at all.
+        /// <c>StopRecording</c> returns immediately and the capture thread settles a few tens of
+        /// milliseconds later, after which disposing is instant.
+        /// </para>
+        /// <para>
+        /// So this stops, waits for <see cref="WasapiRecorder.CaptureState"/> to reach
+        /// <c>Stopped</c>, and disposes. The wait is bounded: a device that has been unplugged
+        /// mid-capture may never report stopped, and a release that hangs forever is worse than
+        /// one that gives up and lets the finaliser deal with it -- this runs on the idle-release
+        /// timer, and a blocked timer thread per dictation is a leak nobody would see until the
+        /// machine ran out of them.
+        /// </para>
         /// </remarks>
-        public void Stop()
-        {
-            // Counted rather than flagged: NAudio raises RecordingStopped through a captured
-            // synchronisation context, so it can arrive well after this method returns. A flag
-            // cleared in a finally would be back to false by then and this deliberate stop would
-            // be reported as a lost device.
-            Interlocked.Increment(ref _expectedStops);
-            _recorder.StopRecording();
-        }
-
         public void Dispose()
         {
             _disposing = true;
             _recorder.DataAvailable -= OnDataAvailable;
             _recorder.RecordingStopped -= OnRecordingStopped;
+
+            try
+            {
+                _recorder.StopRecording();
+                WaitForCaptureThread();
+            }
+            catch (Exception ex) when (ex is COMException or InvalidOperationException or ObjectDisposedException)
+            {
+                // Already stopped, already gone, or never started. Disposing is still correct.
+            }
+
             _recorder.Dispose();
             _device?.Dispose();
+        }
+
+        /// <summary>Spins until the capture thread has left, or the ceiling expires.</summary>
+        private void WaitForCaptureThread()
+        {
+            var deadline = Stopwatch.GetTimestamp() + (long)(StopTimeout.TotalSeconds * Stopwatch.Frequency);
+
+            while (_recorder.CaptureState != CaptureState.Stopped && Stopwatch.GetTimestamp() < deadline)
+            {
+                Thread.Sleep(StopPollInterval);
+            }
         }
 
         private void OnDataAvailable(ReadOnlySpan<byte> data, AudioClientBufferFlags flags, long devicePosition, long qpcPosition)
@@ -283,14 +320,6 @@ public sealed class WasapiDeviceFactory : ICaptureDeviceFactory
         private void OnRecordingStopped(object? sender, StoppedEventArgs e)
         {
             if (_disposing)
-            {
-                return;
-            }
-
-            // A stop Jane asked for, that stopped cleanly, is not a fault. One that asked and
-            // still came back with an exception is: the endpoint went away during the stop, and
-            // pretending otherwise would leave a dead device looking merely idle.
-            if (Interlocked.Exchange(ref _expectedStops, 0) > 0 && e.Exception is null)
             {
                 return;
             }

@@ -10,14 +10,17 @@ namespace Jane.Windows.Audio;
 /// Four rules live here and nowhere else.
 /// <list type="bullet">
 /// <item><see cref="MicrophoneActivation"/> decides when the device <em>captures</em>. The default
-/// starts on key-down and stops a few seconds after the dictation ends, because a running capture
-/// stream forces a Bluetooth headset into its narrowband call profile and quietly ruins every
-/// other sound on the machine. Readying the device is separate and happens at launch: it is
-/// silent, and paying for it here is what stopped the first word of every dictation going
-/// missing.</item>
+/// starts on key-down and releases a few seconds after the dictation ends, because a running
+/// capture stream forces a Bluetooth headset into its narrowband call profile and quietly ruins
+/// every other sound on the machine. Readying the device is separate and happens at launch, and
+/// again immediately after each release: it is silent, and paying for it there rather than on
+/// key-down is what stopped the first word of every dictation going missing.</item>
+/// <item>A capture stream is single-use, so "let go of the microphone" means release and rebuild
+/// rather than stop and reuse. Stopping and keeping the client is what made every dictation after
+/// the first report "No microphone" -- see <see cref="ReleaseAndReady"/>.</item>
 /// <item>Arming back-dates the buffer by whatever pre-roll exists, so the first word survives the
-/// tens of milliseconds between "the user started talking" and "the key registered". A stream that
-/// was stopped has no pre-roll to back-date and drops what it held, so audio from before the stop
+/// tens of milliseconds between "the user started talking" and "the key registered". A released
+/// stream has no pre-roll to back-date and drops what it held, so audio from before the release
 /// can never be spliced onto the front of the next dictation.</item>
 /// <item>A capture is capped in length and a lost device is reconnected, both without the app
 /// restarting and without the caller having to poll anything.</item>
@@ -55,6 +58,9 @@ public sealed class WasapiCapture : IAudioSource
 
     /// <summary>Whether the endpoint is activated. Distinct from the client merely existing.</summary>
     private bool _running;
+
+    /// <summary>Starts refused since the last key-down. Bounds the rebuild-and-retry to one.</summary>
+    private int _startAttempts;
     private bool _isCapturing;
     private int _preRollSamples;
     private CaptureStopReason? _latchedStop;
@@ -139,6 +145,10 @@ public sealed class WasapiCapture : IAudioSource
         // its pre-roll back as a side effect.
         _idleRelease.Change(Timeout.Infinite, Timeout.Infinite);
 
+        // Each key press gets its own rebuild budget: a device that failed an hour ago must not
+        // make this press give up without trying.
+        _startAttempts = 0;
+
         lock (_captureGate)
         {
             _captured.ResetWrittenCount();
@@ -167,7 +177,22 @@ public sealed class WasapiCapture : IAudioSource
         Volatile.Write(ref _armed, Task.CompletedTask);
     }
 
-    /// <summary>Activates a prepared stream. The ring was emptied when it was stopped.</summary>
+    /// <summary>
+    /// Activates a prepared stream, and rebuilds it rather than failing if it will not start.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The ring was emptied when the previous stream was released, so there is no stale audio to
+    /// back-date.
+    /// </para>
+    /// <para>
+    /// The fallback exists because a start that throws used to escape <see cref="Arm"/>, reach the
+    /// orchestrator, and be reported as "No microphone" -- for every dictation from then on, since
+    /// nothing replaced the unusable stream. A driver quirk should cost one device open, not every
+    /// dictation until the app is restarted, so a refusal here discards the stream and opens a new
+    /// one on the same path a cold key-down takes.
+    /// </para>
+    /// </remarks>
     private void StartStream(ICaptureStream stream)
     {
         if (_running)
@@ -175,10 +200,45 @@ public sealed class WasapiCapture : IAudioSource
             return;
         }
 
-        stream.Start();
+        try
+        {
+            stream.Start();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            CloseStream();
+            _running = false;
+
+            // Exactly one rebuild per key press. Retrying without a ceiling would spin open-and-
+            // fail against a device that is simply unavailable -- a busy loop on the audio engine
+            // where the honest answer is a message. The next key-down is the next attempt, which
+            // is a retry the user asked for rather than one Jane inflicted.
+            if (_startAttempts++ == 0 && !_disposed)
+            {
+                Publish(_state with { IsOpen = false, Error = null });
+                Volatile.Write(ref _armed, OpenGuardedAsync(start: true, rethrow: false, CancellationToken.None));
+                return;
+            }
+
+            Publish(_state with { IsOpen = false, Error = DescribeStartFailure(ex) });
+            return;
+        }
+
+        _startAttempts = 0;
         _running = true;
         Publish(_state with { IsOpen = true, Error = null });
     }
+
+    /// <summary>
+    /// Names the failure in the user's own terms, keeping the driver's words.
+    /// </summary>
+    /// <remarks>
+    /// The message matters: "The audio client is already initialized" is what would have named
+    /// this bug in one line, and it was thrown away in favour of a generic sentence about checking
+    /// Windows sound settings.
+    /// </remarks>
+    private static string DescribeStartFailure(Exception ex) =>
+        $"The microphone would not start ({ex.GetType().Name}: {ex.Message}). Jane is opening it again.";
 
     /// <summary>
     /// Changes which microphone is used and when it is held open.
@@ -306,38 +366,60 @@ public sealed class WasapiCapture : IAudioSource
             return;
         }
 
-        Pause();
+        ReleaseAndReady();
     }
 
     /// <summary>
-    /// Deactivates the endpoint but keeps the client ready for the next key press.
+    /// Lets go of the recorder and immediately readies a fresh one, still stopped.
     /// </summary>
     /// <remarks>
-    /// This is what the idle-release timer does now. Stopping is the part a Bluetooth headset
-    /// reacts to and the part that puts out the capture indicator, so the user-visible promise --
-    /// the microphone is off between dictations -- is kept in full. What is kept back is the audio
-    /// client, whose construction is the several hundred milliseconds that used to cost the first
-    /// word of every dictation.
+    /// <para>
+    /// This is what the idle-release timer does. Releasing is the part a Bluetooth headset reacts
+    /// to and the part that puts out the capture indicator, so the user-visible promise -- the
+    /// microphone is off between dictations -- is kept in full.
+    /// </para>
+    /// <para>
+    /// It has to be a release and a rebuild rather than a stop, because a recorder that has been
+    /// started cannot be started again: NAudio's <c>StopRecording</c> leaves the
+    /// <c>IAudioClient</c> initialised and its <c>StartRecording</c> initialises unconditionally,
+    /// so the second start fails with "The audio client is already initialized". Stopping and
+    /// keeping the client was the previous design, and it is what made every dictation after the
+    /// first report "No microphone" until Jane was restarted.
+    /// </para>
+    /// <para>
+    /// The rebuild runs here, at the end of the idle window, rather than on the next key-down --
+    /// so the device open is still off the path the user feels, which was the whole point of
+    /// readying the microphone early in the first place.
+    /// </para>
     /// </remarks>
-    private void Pause()
+    private void ReleaseAndReady()
     {
         _idleRelease.Change(Timeout.Infinite, Timeout.Infinite);
 
-        var stream = _stream;
-        if (stream is null || !_running)
+        if (_stream is null)
         {
             return;
         }
 
-        stream.Stop();
+        CloseStream();
         _running = false;
 
         // Emptied here rather than at the next start, so there is no window in which the ring
-        // holds audio from before the pause. Back-dating that onto the next dictation would splice
-        // two unrelated moments into one utterance.
+        // holds audio from before the release. Back-dating that onto the next dictation would
+        // splice two unrelated moments into one utterance.
         _preRoll.Clear();
         Volatile.Write(ref _level, 0f);
         Publish(_state with { IsOpen = false, Error = null });
+
+        if (_disposed)
+        {
+            return;
+        }
+
+        // Fire and forget, and recorded in Armed so a test or a diagnostic can wait for it. A
+        // key-down that arrives mid-rebuild finds _stream null and goes through OpenGuardedAsync,
+        // which serialises on the same gate.
+        Volatile.Write(ref _armed, OpenGuardedAsync(start: false, rethrow: false, CancellationToken.None));
     }
 
     /// <summary>Closes the stream and forgets the audio in the ring, without an error state.</summary>

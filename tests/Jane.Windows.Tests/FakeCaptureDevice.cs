@@ -35,6 +35,16 @@ internal sealed class FakeCaptureDeviceFactory : ICaptureDeviceFactory
     /// </summary>
     public TimeSpan StartDelay { get; init; }
 
+    /// <summary>
+    /// How many of the streams handed out refuse to start, counted from the first.
+    /// </summary>
+    /// <remarks>
+    /// Stands in for a driver that will not activate an endpoint Jane has just readied. The point
+    /// is not the driver: it is that one refusal must cost one device open, not every dictation
+    /// until the app restarts, which is what happened when a start failure escaped arming.
+    /// </remarks>
+    public int FailStartsForFirstStreams { get; init; }
+
     public FakeCaptureStream? Current { get; private set; }
 
     /// <summary>Every device id passed to <see cref="OpenAsync"/>, in order.</summary>
@@ -60,7 +70,11 @@ internal sealed class FakeCaptureDeviceFactory : ICaptureDeviceFactory
             throw new AudioDeviceException(OpenFailure.Failure, OpenFailure.Message);
         }
 
-        Current = new FakeCaptureStream { StartDelay = StartDelay };
+        Current = new FakeCaptureStream
+        {
+            StartDelay = StartDelay,
+            RefusesToStart = OpenCount <= FailStartsForFirstStreams,
+        };
         return Current;
     }
 }
@@ -79,10 +93,11 @@ internal sealed class FakeCaptureStream : ICaptureStream
 
     public int StartCount { get; private set; }
 
-    public int StopCount { get; private set; }
-
     /// <summary>Stands in for a driver that is slow to activate its endpoint.</summary>
     public TimeSpan StartDelay { get; init; }
+
+    /// <summary>Stands in for a driver that refuses to activate an endpoint at all.</summary>
+    public bool RefusesToStart { get; init; }
 
     public event EventHandler<ReadOnlyMemory<float>>? SamplesAvailable;
 
@@ -90,6 +105,18 @@ internal sealed class FakeCaptureStream : ICaptureStream
 
     public void Prepare() => IsPrepared = true;
 
+    /// <summary>
+    /// Activates the endpoint, once and once only.
+    /// </summary>
+    /// <remarks>
+    /// The second start throwing is not pedantry, it is the hardware. NAudio 3.0.1's
+    /// <c>StopRecording</c> leaves the <c>IAudioClient</c> initialised and its
+    /// <c>StartRecording</c> calls <c>Initialize</c> again unconditionally, so a recorder that has
+    /// been started is finished -- measured on a Jabra Link 380 as
+    /// <c>CoreAudioException: The audio client is already initialized</c>. The fake used to model
+    /// stop-then-start as restartable, 247 tests passed against a contract no real device honours,
+    /// and every dictation after the first idle release failed with "No microphone".
+    /// </remarks>
     public void Start()
     {
         // Starting without preparing is a bug in the caller, not something a device tolerates
@@ -101,6 +128,17 @@ internal sealed class FakeCaptureStream : ICaptureStream
             return;
         }
 
+        if (StartCount > 0 || IsDisposed)
+        {
+            throw new InvalidOperationException("The audio client is already initialized.");
+        }
+
+        if (RefusesToStart)
+        {
+            StartCount++;
+            throw new InvalidOperationException("The endpoint refused to start.");
+        }
+
         if (StartDelay > TimeSpan.Zero)
         {
             Thread.Sleep(StartDelay);
@@ -108,17 +146,6 @@ internal sealed class FakeCaptureStream : ICaptureStream
 
         IsRunning = true;
         StartCount++;
-    }
-
-    public void Stop()
-    {
-        if (!IsRunning)
-        {
-            return;
-        }
-
-        IsRunning = false;
-        StopCount++;
     }
 
     /// <summary>

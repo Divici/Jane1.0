@@ -72,11 +72,16 @@ public enum MicrophoneActivation
     /// dictation ends.
     /// </summary>
     /// <remarks>
-    /// The device is <em>readied</em> at launch and kept ready; only capture is on demand. That
-    /// distinction is the whole fix for the clipped first word: readying is the expensive half and
-    /// is silent -- no samples, no indicator, no profile switch -- while starting is the cheap half
-    /// and is the only part a key press pays for. Before the split, key-down paid for both and the
-    /// user was already a syllable in by the time the first sample arrived.
+    /// The device is <em>readied</em> ahead of time and kept ready; only capture is on demand.
+    /// That distinction is the whole fix for the clipped first word: readying is the expensive
+    /// half and is silent -- no samples, no indicator, no profile switch -- while starting is the
+    /// cheap half and is the only part a key press pays for. Before the split, key-down paid for
+    /// both and the user was already a syllable in by the time the first sample arrived.
+    /// <para>
+    /// "Ahead of time" means at launch and again straight after each idle release, because a
+    /// capture stream cannot be started twice. Keeping a stopped one for the next press is what
+    /// made every dictation after the first fail with "no microphone".
+    /// </para>
     /// <para>
     /// The pre-roll still cannot back-date audio from before the stream was started, so the second
     /// of history it holds is only useful within the idle window, between consecutive dictations.

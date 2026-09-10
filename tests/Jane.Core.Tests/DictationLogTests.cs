@@ -1,5 +1,6 @@
 using Jane.Core.Abstractions;
 using Jane.Core.Diagnostics;
+using Jane.Core.Pipeline;
 
 namespace Jane.Core.Tests;
 
@@ -121,6 +122,41 @@ public sealed class DictationLogTests
         var entry = Assert.Single(log.Entries, e => e.Category == "dictation");
         Assert.Equal("NoSpeech", entry.Field("result"));
         Assert.Equal("1000ms", entry.Field("audio"));
+    }
+
+    [Fact]
+    public async Task ADictationThatCouldNotOpenTheMicrophoneIsLoggedWithTheRealException()
+    {
+        // The gap that made the "No microphone" regression take a hardware experiment to find.
+        // Arming failures never reached the log at all, so two days of a broken microphone left a
+        // file containing one success per launch and nothing else.
+        var log = new RecordingLog();
+        var harness = new Harness(log: log);
+        harness.Source.ArmThrows = new InvalidOperationException("The audio client is already initialized.");
+
+        await harness.Orchestrator.StartAsync(TestContext.Current.CancellationToken);
+        harness.Orchestrator.OnHotkey(new HotkeyEvent(HotkeyEventKind.Pressed, TimeSpan.Zero, DateTimeOffset.Now));
+
+        var entry = Assert.Single(log.Entries, e => e.Category == "dictation");
+        Assert.Equal(LogLevel.Warning, entry.Level);
+        Assert.Equal("NoMicrophone", entry.Field("result"));
+        Assert.Equal("System.InvalidOperationException", entry.Field("exception"));
+        Assert.Contains("already initialized", entry.Field("detail")!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TheMicrophoneFailureShownToTheUserIsTheOneThatActuallyHappened()
+    {
+        // A generic "check your sound settings" replaced every exception whose type name did not
+        // contain "Device", which sent the user to a setting that was never the problem.
+        var harness = new Harness();
+        harness.Source.ArmThrows = new InvalidOperationException("The audio client is already initialized.");
+
+        await harness.Orchestrator.StartAsync(TestContext.Current.CancellationToken);
+        harness.Orchestrator.OnHotkey(new HotkeyEvent(HotkeyEventKind.Pressed, TimeSpan.Zero, DateTimeOffset.Now));
+
+        Assert.Equal(PipelineFailure.NoMicrophone, harness.Orchestrator.Status.Failure);
+        Assert.Contains("already initialized", harness.Orchestrator.Status.Message!, StringComparison.Ordinal);
     }
 
     [Fact]
