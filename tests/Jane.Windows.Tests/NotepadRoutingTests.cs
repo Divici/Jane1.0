@@ -16,19 +16,23 @@ namespace Jane.Windows.Tests;
 public sealed class NotepadRoutingTests
 {
     [Theory]
-    [InlineData("notepad")]
-    [InlineData("Notepad")]
-    public void NotepadTypesRatherThanPastesHoweverLongTheTextIs(string processName)
+    [InlineData("notepad", 36)]
+    [InlineData("Notepad", 36)]
+    [InlineData("notepad", 1)]
+    [InlineData("notepad", 4_000)]
+    public void NotepadPastesRatherThanTypesHoweverShortTheTextIs(string processName, int characterCount)
     {
-        // 200 characters was the threshold that sent everything longer through the clipboard, and
-        // the reported dictation was well past it.
+        // 36 is the measurement: a 36-character sentence typed into Windows 11 Notepad as
+        // synthetic Unicode had SendInput accept all 72 records and the document keep 27
+        // characters. There is no length at which this target can be trusted with keystrokes, so
+        // there is no length at which the rule bends.
         var selector = new InjectionStrategySelector();
         var target = new TargetWindow(1, 2, processName, "Notepad", "Untitled");
 
-        var decision = selector.Select(target, characterCount: 4_000);
+        var decision = selector.Select(target, characterCount);
 
-        Assert.Equal(InjectionStrategy.Unicode, decision.Strategy);
-        Assert.Contains("Plain-text", decision.Reason, StringComparison.Ordinal);
+        Assert.Equal(InjectionStrategy.Clipboard, decision.Strategy);
+        Assert.Contains("drops synthetic keystrokes", decision.Reason, StringComparison.Ordinal);
     }
 
     [Fact]

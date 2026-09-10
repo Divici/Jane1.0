@@ -25,17 +25,27 @@ public sealed record InjectionStrategySelectorOptions(
     InjectionRule Fallback)
 {
     /// <summary>
-    /// Why Notepad types rather than pastes, at any length.
+    /// Why Notepad pastes rather than types, at any length.
     /// </summary>
     /// <remarks>
-    /// Windows 11's Notepad is a WinUI application, and the clipboard round trip through it is
-    /// where a long dictation was reported arriving as something other than the text. Its editor
-    /// accepts synthetic Unicode without complaint -- it is a plain-text box with no rich formats,
-    /// no completion and no input method of its own -- so the clipboard buys nothing here and
-    /// costs a borrow of the user's clipboard and a race to give it back.
+    /// <para>
+    /// Measured, not reasoned about. Injecting a 36-character sentence into Windows 11 Notepad as
+    /// synthetic Unicode had <c>SendInput</c> accept all 72 records and report success, while the
+    /// document received the first 27 characters and nothing else. The same sentence through the
+    /// clipboard arrived whole. Both reads were taken back out of the running Notepad through UI
+    /// Automation, so this is what the application actually ended up holding.
+    /// </para>
+    /// <para>
+    /// This rule previously said the opposite, on the reasoning that a plain-text editor with no
+    /// rich formats and no completion must accept synthetic keystrokes at any length. Windows 11's
+    /// Notepad is not that editor -- it is a WinUI shell whose text host drops synthetic input it
+    /// cannot keep up with, silently and without failing the call. Reasoning about what an
+    /// application ought to accept is what produced the bug; the length threshold is set from a
+    /// measurement now.
+    /// </para>
     /// </remarks>
-    private const string PlainTextReason =
-        "Plain-text editor: synthetic Unicode keystrokes land intact at any length, so there is no reason to borrow the clipboard.";
+    private const string NotepadReason =
+        "Windows 11 Notepad drops synthetic keystrokes it cannot keep up with, silently and without failing the call -- measured at 27 of 36 characters arriving. The clipboard is the only path that delivers the whole dictation.";
 
     private const string TerminalReason =
         "Terminal: Ctrl+V is not paste in a console, and Windows Terminal interrupts a multiline paste with a confirmation dialog. Synthetic Unicode keystrokes are the only strategy that always lands.";
@@ -68,13 +78,16 @@ public sealed record InjectionStrategySelectorOptions(
         var chromium = new InjectionRule(DefaultUnicodeMaxCharacters, InjectionStrategy.Clipboard, ChromiumReason);
         var office = new InjectionRule(4_000, InjectionStrategy.Clipboard, OfficeReason);
 
-        var plainText = new InjectionRule(int.MaxValue, InjectionStrategy.Unicode, PlainTextReason);
+        // Zero, so every dictation with any content at all pastes. Not int.MaxValue on the
+        // clipboard side of the comparison: the threshold is "how much Unicode this target can be
+        // trusted with", and for this one the answer is none.
+        var notepad = new InjectionRule(0, InjectionStrategy.Clipboard, NotepadReason);
 
         var processRules = new Dictionary<string, InjectionRule>(StringComparer.OrdinalIgnoreCase);
         Add(processRules, terminal,
             "windowsterminal", "wt", "openconsole", "conhost", "cmd", "powershell", "pwsh",
             "mintty", "alacritty", "wezterm", "wezterm-gui", "putty", "kitty");
-        Add(processRules, plainText, "notepad", "wordpad");
+        Add(processRules, notepad, "notepad");
         Add(processRules, electron,
             "code", "code - insiders", "cursor", "windsurf", "slack", "discord", "teams",
             "ms-teams", "notion", "obsidian", "signal", "whatsapp", "spotify", "figma",
