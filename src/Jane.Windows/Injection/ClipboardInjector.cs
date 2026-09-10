@@ -12,26 +12,28 @@ namespace Jane.Windows.Injection;
 /// the user would get their old clipboard contents instead of their dictation.
 /// </param>
 /// <param name="PasteSettleCeiling">
-/// How long to keep waiting for evidence the target read the clipboard before giving up and
-/// restoring anyway. A target that never reads must not hold the user's clipboard indefinitely.
-/// Zero disables the wait entirely and falls back to <paramref name="PasteSettleDelay"/> alone,
-/// which is what the tests use.
+/// How long Jane leaves its text on the clipboard before putting the user's back. Zero disables
+/// the wait entirely and falls back to <paramref name="PasteSettleDelay"/> alone, which is what
+/// the tests use.
 /// </param>
-/// <param name="PasteSettlePoll">How often the clipboard's sequence number is re-read.</param>
+/// <param name="PasteSettlePoll">Unused. Kept so an explicitly-configured caller still compiles.</param>
 public sealed record ClipboardInjectorOptions(
     TimeSpan PasteSettleDelay,
     TimeSpan PasteSettleCeiling = default,
     TimeSpan PasteSettlePoll = default)
 {
     /// <summary>
-    /// 30 ms floor, 750 ms ceiling, polled every 10 ms.
+    /// 750 ms, which is a wait rather than a measurement, and says so.
     /// </summary>
     /// <remarks>
-    /// The old default was a flat 60 ms and nothing else, chosen as a guess at how long a target
-    /// takes to process a key message. Windows 11's Notepad is a WinUI application and can take
-    /// several times that under load, and when it does the user's own clipboard is what lands in
-    /// the document. The ceiling is generous because the cost of overshooting is that the user's
-    /// clipboard comes back a little late, and the cost of undershooting is a lost dictation.
+    /// The first version was a flat 60 ms, guessed. The second polled the clipboard sequence
+    /// number for a confirmation that could never arrive, because that number tracks contents
+    /// changing and a read changes nothing -- so it always ran the full ceiling while claiming to
+    /// be watching for something. This is the same 750 ms without the claim.
+    /// <para>
+    /// Generous on purpose: overshooting means the user's clipboard comes back a little late, and
+    /// undershooting means their old clipboard lands in the document instead of the dictation.
+    /// </para>
     /// </remarks>
     public static ClipboardInjectorOptions Default { get; } = new(
         PasteSettleDelay: TimeSpan.FromMilliseconds(30),
@@ -139,8 +141,8 @@ public sealed class ClipboardInjector : ITextInjector
         {
             _clipboard.SetContents(BuildPayload(text));
 
-            // Sampled between Jane's own write and the paste, so the only thing that can move it
-            // afterwards is somebody else opening the clipboard -- which is the target reading.
+            // Sampled between Jane's own write and the paste, so anything that moves it afterwards
+            // is another application writing to the clipboard, not the target reading from it.
             var baseline = _clipboard.SequenceNumber;
 
             SendPaste();
@@ -158,7 +160,10 @@ public sealed class ClipboardInjector : ITextInjector
         }
         finally
         {
-            restored = Restore(saved);
+            // Skipped only when something else has already claimed the clipboard: putting the old
+            // contents back over their write would lose it. On every other path the user gets
+            // their clipboard back, including the ones that threw.
+            restored = !settle.TakenOver && Restore(saved);
         }
 
         return new InjectionResult(
@@ -176,8 +181,16 @@ public sealed class ClipboardInjector : ITextInjector
         };
     }
 
-    /// <param name="Reason">Which condition ended the wait: a confirmed read, or the ceiling.</param>
-    private readonly record struct ClipboardSettle(TimeSpan Waited, string Reason);
+    /// <param name="Reason">Why the wait ended, and whether anything took the clipboard meanwhile.</param>
+    /// <param name="TakenOver">
+    /// True when another application wrote to the clipboard while Jane was borrowing it.
+    /// </param>
+    /// <remarks>
+    /// Phrased as "taken over" rather than "safe to restore" so that the default value of the
+    /// struct -- which is what the aborting paths carry -- means restore. Getting the clipboard
+    /// back to the user is the behaviour that must not depend on remembering to ask for it.
+    /// </remarks>
+    private readonly record struct ClipboardSettle(TimeSpan Waited, string Reason, bool TakenOver);
 
     /// <summary>
     /// Waits for the target to actually take the paste before the clipboard is handed back.
@@ -192,11 +205,23 @@ public sealed class ClipboardInjector : ITextInjector
     /// gets pasted, or nothing at all.
     /// </para>
     /// <para>
-    /// So the wait ends on evidence instead: the clipboard's sequence number changes when anyone
-    /// opens it, and the target opening it to read the paste is exactly the event worth waiting
-    /// for. A ceiling stops a target that never reads from holding the user's clipboard hostage,
-    /// and which branch ended the wait goes on the result -- "confirmed" and "ceiling" are very
-    /// different stories when a paste comes out wrong.
+    /// It was then rewritten to wait for evidence, polling the clipboard sequence number until it
+    /// moved, on the belief that a target opening the clipboard to read a paste would move it. It
+    /// does not: that number tracks clipboard <em>contents changing</em>, and a read changes
+    /// nothing. The confirming branch was unreachable and every clipboard injection in the field
+    /// log ended at the ceiling, which is the shape a mechanism has when it is not working.
+    /// </para>
+    /// <para>
+    /// There is no cheap signal for "the paste landed". Windows will report it through delayed
+    /// rendering -- publish the format with no data and it sends <c>WM_RENDERFORMAT</c> at the
+    /// moment a consumer asks -- but that means owning the clipboard from a window with a live
+    /// message pump and being certain to answer in time, where being late means the paste fails
+    /// outright. That is a worse failure than waiting, so the wait is honest about being a wait.
+    /// </para>
+    /// <para>
+    /// What the sequence number is genuinely good for is the one case where restoring does harm:
+    /// if it moved, another application wrote to the clipboard while Jane was borrowing it, and
+    /// putting the old contents back would discard whatever they had just copied.
     /// </para>
     /// </remarks>
     private async Task<ClipboardSettle> WaitForPasteAsync(uint before, CancellationToken cancellationToken)
@@ -207,24 +232,21 @@ public sealed class ClipboardInjector : ITextInjector
         if (_options.PasteSettleCeiling <= TimeSpan.Zero)
         {
             await Task.Delay(_options.PasteSettleDelay, cancellationToken).ConfigureAwait(false);
-            return new ClipboardSettle(Stopwatch.GetElapsedTime(startedAt), "no-wait");
+            return new ClipboardSettle(Stopwatch.GetElapsedTime(startedAt), "no-wait", TakenOver: false);
         }
 
-        // The floor is not optional. A target that reads immediately would otherwise have its
-        // clipboard swapped between the key message and the read.
-        await Task.Delay(_options.PasteSettleDelay, cancellationToken).ConfigureAwait(false);
+        await Task.Delay(_options.PasteSettleCeiling, cancellationToken).ConfigureAwait(false);
 
-        while (Stopwatch.GetElapsedTime(startedAt) < _options.PasteSettleCeiling)
-        {
-            if (before != 0 && _clipboard.SequenceNumber != before)
-            {
-                return new ClipboardSettle(Stopwatch.GetElapsedTime(startedAt), "confirmed");
-            }
+        // Not a confirmation that the paste happened -- nothing reports that -- but a check for
+        // the one case where restoring would do harm. If the number moved, some other application
+        // wrote to the clipboard while Jane was borrowing it, and putting the old contents back
+        // would throw away whatever they had just copied.
+        var takenOver = before != 0 && _clipboard.SequenceNumber != before;
 
-            await Task.Delay(_options.PasteSettlePoll, cancellationToken).ConfigureAwait(false);
-        }
-
-        return new ClipboardSettle(Stopwatch.GetElapsedTime(startedAt), "ceiling");
+        return new ClipboardSettle(
+            Stopwatch.GetElapsedTime(startedAt),
+            takenOver ? "taken-over" : "elapsed",
+            TakenOver: takenOver);
     }
 
     /// <summary>Ctrl down, V down, V up, Ctrl up.</summary>

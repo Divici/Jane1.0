@@ -108,6 +108,18 @@ public sealed class FormatterTests
     }
 
     [Fact]
+    public void TheFormattingDeadlineIsSizedForAWarmModelNotAColdLoad()
+    {
+        // Twenty seconds was sized for a cold load, on the reasoning that key-down warm-up would
+        // hide it behind the speech. It did not: a 4.6-second dictation took 20.2 seconds end to
+        // end, and the user watched the pill say "formatting" for all of it. Warm generation is
+        // 50-200 ms for a sentence and a second or two for a long one, so five seconds clears
+        // every warm case and abandons a cold one quickly. The warm-up survives the deadline, so
+        // the model still loads and the next dictation is fast.
+        Assert.Equal(TimeSpan.FromSeconds(5), new TranscriptFormatterOptions().Timeout);
+    }
+
+    [Fact]
     public async Task TimeoutInjectsRawTextWithinBudget()
     {
         var llm = new FakeLlmClient { Response = "never arrives", Delay = TimeSpan.FromSeconds(30) };

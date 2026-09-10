@@ -37,6 +37,11 @@ public sealed class RealNotepadTests
     {
         Assert.SkipWhen(AnyNotepadIsOpen(), AlreadyOpen);
 
+        // There is one foreground window per desktop and several test projects want it. Without
+        // this, launching Notepad here takes the foreground from the governor's borderless-window
+        // tests and the caret locator, and all three fail for reasons unrelated to their subject.
+        using var foreground = ForegroundLock.Acquire();
+
         using var notepad = Launch();
         var target = await WaitForForegroundNotepadAsync();
         Assert.SkipWhen(target is null, "Notepad did not take the foreground in this session.");
@@ -79,6 +84,7 @@ public sealed class RealNotepadTests
         // silently fall back to the keystroke path that loses characters.
         Assert.SkipWhen(AnyNotepadIsOpen(), AlreadyOpen);
 
+        using var foreground = ForegroundLock.Acquire();
         using var notepad = Launch();
         var target = await WaitForForegroundNotepadAsync();
         Assert.SkipWhen(target is null, "Notepad did not take the foreground in this session.");

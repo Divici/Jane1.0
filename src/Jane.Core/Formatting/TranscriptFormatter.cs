@@ -14,13 +14,24 @@ namespace Jane.Core.Formatting;
 /// formatting stage -- the transport's own HTTP timeout is two minutes, which is not a deadline
 /// a person would wait out.
 /// <para>
-/// Sized for the cold path, not the warm one. Measured on this machine: warm generation for a
-/// one-sentence transcript is 50-200 ms, a warm-process model reload is 1-3 s, and the
-/// first-ever load from a cold disk cache was 19.6 s (plan.md P0-4) -- which is what a user meets
-/// on the first dictation after a reboot. A tighter cap would drop formatting on that dictation
-/// every session, and losing filler removal once per boot is more visible than one long wait that
-/// key-down warm-up mostly hides behind the speech. On expiry the raw ASR text is injected --
-/// never nothing.
+/// Sized for the warm path, with the cold path deliberately allowed to miss. Measured: warm
+/// generation for a one-sentence transcript is 50-200 ms, and a long one is a second or two; a
+/// cold load is around twenty seconds. Five seconds therefore clears every warm case several
+/// times over and gives up quickly on a cold one.
+/// </para>
+/// <para>
+/// This was twenty seconds, sized for the cold load on the reasoning that key-down warm-up would
+/// "mostly hide it behind the speech" and that losing filler removal once per boot would be more
+/// visible than one long wait. The field says otherwise: a 4.6-second dictation took 20.2 seconds
+/// end to end and the user watched the pill say "formatting" for all of it. A wait that long is
+/// not hidden by anything.
+/// </para>
+/// <para>
+/// Giving up early costs less than it appears to, because the warm-up started at key-down runs on
+/// its own task with no cancellation token and survives this deadline. So the cold dictation
+/// falls back to raw text after five seconds and the model finishes loading anyway, which leaves
+/// the next dictation warm. On expiry the raw ASR text is injected -- never nothing, and Parakeet
+/// already emits punctuation and casing.
 /// </para>
 /// </param>
 /// <param name="MaxOutputTokens">
@@ -39,7 +50,7 @@ public sealed record TranscriptFormatterOptions
 
     public double Temperature { get; init; } = 0.2;
 
-    public TimeSpan Timeout { get; init; } = TimeSpan.FromSeconds(20);
+    public TimeSpan Timeout { get; init; } = TimeSpan.FromSeconds(5);
 
     public int MaxOutputTokens { get; init; } = 512;
 

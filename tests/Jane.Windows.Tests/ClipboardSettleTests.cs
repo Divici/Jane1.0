@@ -42,70 +42,49 @@ public sealed class ClipboardSettleTests
         new(Handle: 0x00BEEF, ProcessId: 4242, ProcessName: "notepad", WindowClass: "Notepad", WindowTitle: "Untitled");
 
     [Fact]
-    public async Task ATargetThatReadsPromptlyEndsTheWaitEarly()
+    public async Task TheWaitRunsItsFullLengthAndSaysThatIsWhatItDid()
     {
-        // The target reads the clipboard while processing the key message, so the read is modelled
-        // as happening during the send rather than after it.
-        var clipboard = FakeClipboard.WithUsersData();
-        var send = new FakeSendInput
-        {
-            OnSend = batch =>
-            {
-                clipboard.SimulateRead();
-                return new SendInputOutcome((uint)batch.Length, 0);
-            },
-        };
-
-        var result = await NewInjector(clipboard, send)
-            .InjectAsync("hello", Notepad, TestContext.Current.CancellationToken);
-
-        Assert.True(result.Succeeded, result.Detail);
-        Assert.Equal("confirmed", result.Diagnostics.PasteSettleReason);
-        Assert.True(result.Diagnostics.PasteSettle < TimeSpan.FromMilliseconds(300));
-    }
-
-    [Fact]
-    public async Task ATargetThatNeverReadsIsGivenUpOnAtTheCeiling()
-    {
-        // The clipboard still comes back. A user whose copied text vanished because one
-        // application ignored a paste would be worse off than one whose dictation failed.
+        // A read does not move the clipboard sequence number, so there is no confirmation to wait
+        // for and the code no longer pretends there is. Every clipboard injection in the field log
+        // ended at the ceiling while claiming to be watching for a signal that cannot occur.
         var clipboard = FakeClipboard.WithUsersData();
 
         var result = await NewInjector(clipboard, new FakeSendInput())
             .InjectAsync("hello", Notepad, TestContext.Current.CancellationToken);
 
         Assert.True(result.Succeeded, result.Detail);
-        Assert.Equal("ceiling", result.Diagnostics.PasteSettleReason);
-        Assert.True(result.Diagnostics.PasteSettle >= TimeSpan.FromMilliseconds(400));
+        Assert.Equal("elapsed", result.Diagnostics.PasteSettleReason);
+        Assert.True(result.Diagnostics.PasteSettle >= TimeSpan.FromMilliseconds(350));
         Assert.True(result.Diagnostics.ClipboardRestored);
     }
 
     [Fact]
-    public async Task ASlowTargetIsStillWaitedForRatherThanRacedWith()
+    public async Task AnotherApplicationTakingTheClipboardStopsJaneOverwritingIt()
     {
-        // The bug, stated directly: 60 ms was not enough for this target and 400 ms is.
+        // What the sequence number is actually good for. If something else wrote while Jane was
+        // borrowing, restoring the old contents would throw away what they had just copied.
         var clipboard = FakeClipboard.WithUsersData();
-        var send = new FakeSendInput();
-        var injector = NewInjector(clipboard, send);
-
         var token = TestContext.Current.CancellationToken;
-        var reading = Task.Run(
+
+        var somebodyElseCopies = Task.Run(
             async () =>
             {
-                await Task.Delay(120, token);
+                await Task.Delay(80, token);
                 clipboard.SimulateRead();
             },
             token);
 
-        var result = await injector.InjectAsync("hello", Notepad, TestContext.Current.CancellationToken);
-        await reading;
+        var result = await NewInjector(clipboard, new FakeSendInput())
+            .InjectAsync("hello", Notepad, token);
+        await somebodyElseCopies;
 
-        Assert.Equal("confirmed", result.Diagnostics.PasteSettleReason);
-        Assert.True(result.Diagnostics.PasteSettle >= TimeSpan.FromMilliseconds(100));
+        Assert.True(result.Succeeded, result.Detail);
+        Assert.Equal("taken-over", result.Diagnostics.PasteSettleReason);
+        Assert.False(result.Diagnostics.ClipboardRestored);
     }
 
     [Fact]
-    public async Task TheUsersClipboardIsAlwaysPutBackWhicheverWayTheWaitEnded()
+    public async Task TheUsersClipboardIsPutBackWhenNothingElseClaimedIt()
     {
         var clipboard = FakeClipboard.WithUsersData();
         var before = clipboard.Snapshot().Select(p => p.Format).ToArray();
@@ -114,6 +93,26 @@ public sealed class ClipboardSettleTests
             .InjectAsync("hello", Notepad, TestContext.Current.CancellationToken);
 
         Assert.True(result.Diagnostics.ClipboardRestored);
+        Assert.Equal(before, clipboard.Snapshot().Select(p => p.Format).ToArray());
+    }
+
+    [Fact]
+    public async Task AnInjectionThatThrowsStillGivesTheClipboardBack()
+    {
+        // The abort paths carry a default settle value, so "was anything else holding it" has to
+        // default to no. A flag that had to be set to get the user's clipboard back would lose it
+        // on exactly the paths nobody rehearses.
+        var clipboard = FakeClipboard.WithUsersData();
+        var before = clipboard.Snapshot().Select(p => p.Format).ToArray();
+        var send = new FakeSendInput
+        {
+            OnSend = _ => throw new InvalidOperationException("SendInput blew up mid-chord."),
+        };
+
+        var result = await NewInjector(clipboard, send)
+            .InjectAsync("hello", Notepad, TestContext.Current.CancellationToken);
+
+        Assert.False(result.Succeeded);
         Assert.Equal(before, clipboard.Snapshot().Select(p => p.Format).ToArray());
     }
 
