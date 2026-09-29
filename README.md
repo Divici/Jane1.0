@@ -19,6 +19,10 @@ machine. Every model runs locally on the CPU.
 - **Punctuation and capitalisation without asking.** The speech model emits them directly; a local
   language model then removes filler, resolves spoken self-corrections ("go to the store —
   actually, the pharmacy"), and applies the structure you meant.
+- **Numbers and symbols written the way they are written.** "Ticket one eight eight" types
+  `ticket 188`, "three slash four" types `3/4`, and "hello comma world period" types
+  `hello, world.` This is done in code on every dictation, so it holds even when the language
+  model is skipped.
 - **Edit Mode.** Select text, hold the key, say "make this shorter" — the selection is rewritten
   rather than replaced with the words you just said. If Jane cannot read the selection, it says so
   instead of guessing.

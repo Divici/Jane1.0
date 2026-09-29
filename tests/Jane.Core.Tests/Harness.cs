@@ -310,9 +310,16 @@ internal sealed class Harness
     {
         public int Calls { get; private set; }
 
+        /// <summary>What the formatter was handed, which is not always what was said.</summary>
+        public List<string> Received { get; } = [];
+
+        public List<FormattingContext> Contexts { get; } = [];
+
         public Task<string> FormatAsync(string transcript, FormattingContext context, CancellationToken cancellationToken)
         {
             Calls++;
+            Received.Add(transcript);
+            Contexts.Add(context);
             return Task.FromResult(transcript);
         }
     }

@@ -19,7 +19,7 @@ namespace Jane.App.Composition;
 public sealed class RoutedFormatter(
     ITranscriptFormatter inner,
     Func<LlmRoute> route,
-    Action<string>? onSkipped = null) : ITranscriptFormatter
+    Action<string, string>? onSkipped = null) : ITranscriptFormatter
 {
     public async Task<string> FormatAsync(
         string transcript, FormattingContext context, CancellationToken cancellationToken)
@@ -28,7 +28,7 @@ public sealed class RoutedFormatter(
 
         if (current == LlmRoute.Skip)
         {
-            onSkipped?.Invoke(transcript);
+            onSkipped?.Invoke(context.Recognised ?? transcript, transcript);
             return transcript;
         }
 
@@ -41,7 +41,7 @@ public sealed class RoutedFormatter(
             // A formatting failure must never cost the user their dictation. The raw transcript is
             // already presentable text; losing it because a model misbehaved would be the worse
             // outcome by far.
-            onSkipped?.Invoke(transcript);
+            onSkipped?.Invoke(context.Recognised ?? transcript, transcript);
             return transcript;
         }
     }

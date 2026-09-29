@@ -81,7 +81,9 @@ public sealed class HistoryFormattingLog(HistoryStore history, Func<TargetWindow
 /// </remarks>
 public sealed class SkippedDictationLog(HistoryStore history, Func<TargetWindow> target)
 {
-    public void Record(string transcript)
+    /// <param name="heard">The recogniser's own words.</param>
+    /// <param name="injected">What was typed: the same, with numbers and symbols written out.</param>
+    public void Record(string heard, string injected)
     {
         var window = target();
 
@@ -89,8 +91,8 @@ public sealed class SkippedDictationLog(HistoryStore history, Func<TargetWindow>
         {
             CreatedAt = DateTimeOffset.Now,
             Mode = DictationMode.Dictation,
-            RawTranscript = transcript,
-            FinalText = transcript,
+            RawTranscript = heard,
+            FinalText = injected,
             Target = window,
             Bypassed = true,
             BypassReason = "The GPU governor routed this dictation to LLM-off, so the raw transcript was injected unchanged.",

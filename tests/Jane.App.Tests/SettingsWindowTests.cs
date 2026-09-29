@@ -14,6 +14,7 @@ using Jane.Core.Models;
 using Jane.Core.Platform;
 using Jane.Core.Settings;
 using Jane.Core.Storage;
+using Jane.Core.Text;
 using Jane.Core.Vocabulary;
 using Jane.Speech;
 
@@ -71,6 +72,40 @@ public sealed class SettingsWindowTests
         // Read through a second repository over the same file: the cached value proves nothing.
         Assert.False(jane.ReopenSettings().Overlay.Visible);
         Assert.False(Assert.Single(applied).Visible);
+    }
+
+    [Fact]
+    public async Task HowNumbersAndSymbolsAreWrittenIsAChoiceOnScreen()
+    {
+        using var sta = new StaTestContext();
+        using var jane = new TempJane();
+
+        await sta.InvokeAsync(async () =>
+        {
+            var window = jane.OpenSettings();
+            var model = window.Model;
+
+            // Both start on, because a number arriving as a word was the complaint.
+            Assert.Equal(NumberStyle.DigitsExceptLoneOne, model.Numbers);
+            Assert.True(model.SpokenSymbols);
+
+            var formatting = window.SectionView(SettingsSection.Formatting);
+            UiTree.Realize(formatting);
+
+            var numbers = UiTree.ById<ComboBox>(formatting, "NumberStyle");
+            var symbols = UiTree.ById<CheckBox>(formatting, "SpokenSymbols");
+            Assert.Equal(3, numbers.Items.Count);
+            Assert.True(symbols.IsChecked);
+
+            model.NumberStyleChoiceValue = model.NumberStyleChoices.Single(c => c.Style == NumberStyle.AsSpoken);
+            model.SpokenSymbols = false;
+            await model.LastWrite;
+        });
+
+        var stored = jane.ReopenSettings();
+
+        Assert.Equal(NumberStyle.AsSpoken, stored.Text.Numbers);
+        Assert.False(stored.Text.SpokenSymbols);
     }
 
     [Fact]

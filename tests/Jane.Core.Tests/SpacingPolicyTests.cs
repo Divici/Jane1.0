@@ -13,11 +13,10 @@ namespace Jane.Core.Tests;
 /// insert a space -- in a tool whose entire purpose is not reaching for the keyboard.
 /// </para>
 /// <para>
-/// The fix cannot read the character before the caret: UIA hands back the enclosing paragraph
-/// without a caret offset, and a good half of the apps people dictate into refuse UIA entirely.
-/// What Jane does reliably know is what <em>it</em> last typed into this same window, which is
-/// exactly the case that goes wrong. So the policy is memory, not observation, and it declines to
-/// guess whenever that memory does not apply.
+/// The policy itself is a pure function of what is about to be typed and what sits before the
+/// caret. Where that second fact comes from -- the application's own answer, or Jane's memory of
+/// what it last typed -- is the orchestrator's business and is tested there. Here, null means
+/// nobody knows, and not knowing means adding nothing.
 /// </para>
 /// </remarks>
 public sealed class SpacingPolicyTests

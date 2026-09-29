@@ -54,6 +54,33 @@ public sealed class FormatterTests
     }
 
     [Fact]
+    public async Task TheRecordKeepsWhatWasHeardRatherThanWhatItWasTurnedInto()
+    {
+        var llm = new FakeLlmClient { Response = "should never be asked for" };
+        var log = new RecordingFormattingLog();
+        var formatter = FormatterFixture.Build(llm, log: log);
+
+        await formatter.FormatAsync(
+            "Ticket 188 is done.",
+            Notepad with { Recognised = "Ticket one eight eight is done." },
+            TestContext.Current.CancellationToken);
+
+        var outcome = Assert.Single(log.Outcomes);
+        Assert.Equal("Ticket one eight eight is done.", outcome.RawTranscript);
+        Assert.Equal("Ticket 188 is done.", outcome.FinalText);
+    }
+
+    [Fact]
+    public void ThePromptTellsTheModelToLeaveFiguresAndSymbolsAlone()
+    {
+        // Numbers and symbols are settled in code before the model is asked anything. A model
+        // that "helpfully" spelled 188 back out, or turned "one of them" into "1 of them", would
+        // undo a decision it was never given.
+        Assert.Contains("exactly as they appear", PromptBuilder.SystemPrompt, StringComparison.Ordinal);
+        Assert.DoesNotContain("as spoken: 3pm stays 3pm", PromptBuilder.SystemPrompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task BypassMakesZeroCallsForACleanTranscript()
     {
         var llm = new FakeLlmClient { Response = "should never be asked for" };

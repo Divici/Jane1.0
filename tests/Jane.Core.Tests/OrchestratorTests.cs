@@ -2,6 +2,7 @@ using System.Net;
 using Jane.Core.Abstractions;
 using Jane.Core.Modes;
 using Jane.Core.Pipeline;
+using Jane.Core.Text;
 
 namespace Jane.Core.Tests;
 
@@ -511,5 +512,71 @@ public sealed class OrchestratorTests
         await harness.DictateAsync("How are you?");
 
         Assert.Equal(["Hello there.", " How are you?"], harness.Injector.Injected);
+    }
+
+    [Fact]
+    public async Task SpokenNumbersAndSymbolsAreWrittenOutBeforeAnythingElseSeesThem()
+    {
+        var harness = new Harness();
+
+        await harness.DictateAsync("three slash four");
+
+        // Before the formatter, not after: the in-game route and the short-sentence bypass never
+        // reach a language model, and a fraction has to come out right on those too.
+        Assert.Equal("3/4", Assert.Single(harness.Formatter.Received));
+        Assert.Equal("3/4", Assert.Single(harness.Injector.Injected));
+    }
+
+    [Fact]
+    public async Task WhatTheRecogniserActuallyHeardIsKeptForTheRecord()
+    {
+        var harness = new Harness();
+
+        await harness.DictateAsync("ticket one eight eight");
+
+        // History shows the raw transcript beside the final text. If that were the converted
+        // text, "why did Jane write 188" would have no answer anywhere.
+        Assert.Equal("ticket one eight eight", Assert.Single(harness.Formatter.Contexts).Recognised);
+    }
+
+    [Fact]
+    public async Task SpokenFormsCanBeSwitchedOffOnARunningPipeline()
+    {
+        var harness = new Harness();
+        harness.Orchestrator.SpokenForms = SpokenFormOptions.Off;
+
+        await harness.DictateAsync("three slash four");
+
+        Assert.Equal("three slash four", Assert.Single(harness.Injector.Injected));
+    }
+
+    [Fact]
+    public async Task SpokenFormsAreSeededFromTheOptions()
+    {
+        var harness = new Harness(new OrchestratorOptions
+        {
+            SpokenForms = new SpokenFormOptions(NumberStyle.AsSpoken, Symbols: true),
+        });
+
+        await harness.DictateAsync("three slash four");
+
+        Assert.Equal("three/four", Assert.Single(harness.Injector.Injected));
+    }
+
+    [Fact]
+    public async Task ACorrectionSpokenOverASelectionIsWrittenOutToo()
+    {
+        var harness = new Harness
+        {
+            Transcript = "the ratio is three slash four",
+            Context = new DictationContext(
+                new SelectionResult(true, "the ratio is a half", SelectionSource.Uia), []),
+        };
+
+        await harness.DictateAsync();
+
+        // No command word, so this replaces the selection with what was said -- and what was
+        // said is typed text like any other.
+        Assert.Equal("the ratio is 3/4", Assert.Single(harness.Injector.Injected));
     }
 }

@@ -2,6 +2,7 @@ using Jane.App.Composition;
 using Jane.Core.Abstractions;
 using Jane.Core.Settings;
 using Jane.Core.Storage;
+using Jane.Core.Text;
 using Jane.Windows.Hotkeys;
 
 namespace Jane.App.Tests;
@@ -42,6 +43,25 @@ public sealed class LiveSettingsTests
         // Somebody turning automatic spacing off has just watched Jane put a space where they did
         // not want one. Making them restart to find out whether it helped is the wrong answer.
         Assert.False(Assert.Single(seen).AutoSpace);
+    }
+
+    [Fact]
+    public void ChangingHowNumbersAreWrittenReachesTheRunningPipeline()
+    {
+        using var hotkeys = new LowLevelKeyboardHook(HotkeyBinding.Default, HotkeyMode.Hold);
+        var microphone = new RecordingAudioSource();
+        var seen = new List<TextSettings>();
+        using var live = new LiveSettings(hotkeys, microphone, _ => { }, seen.Add);
+
+        live.Apply(new JaneSettings
+        {
+            Text = new TextSettings(Numbers: NumberStyle.AsSpoken, SpokenSymbols: false),
+        });
+
+        var applied = Assert.Single(seen);
+        Assert.Equal(NumberStyle.AsSpoken, applied.Numbers);
+        Assert.False(applied.SpokenSymbols);
+        Assert.True(applied.ToSpokenFormOptions().IsOff);
     }
 
     [Fact]

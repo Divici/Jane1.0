@@ -483,6 +483,27 @@
                             </StackPanel>
                         </c:SettingsGroup>
 
+                        <c:SettingsGroup Header="Numbers and symbols"
+                                         Description="The speech engine writes what it heard, so a number or a symbol arrives as a word unless something turns it back. Jane does that itself, on every dictation, whether or not the language model runs.">
+                            <StackPanel>
+                                <c:SettingRow Header="Numbers" Description="{Binding NumberStyleChoiceValue.Description}">
+                                    <ComboBox Style="{StaticResource JaneComboBox}"
+                                              MinWidth="240"
+                                              ItemsSource="{Binding NumberStyleChoices}"
+                                              SelectedItem="{Binding NumberStyleChoiceValue}"
+                                              AutomationProperties.AutomationId="NumberStyle"
+                                              AutomationProperties.Name="How spoken numbers are written" />
+                                </c:SettingRow>
+                                <c:SettingRow Header="Type symbols when they are named"
+                                              Description="Saying &quot;three slash four&quot; types 3/4, and &quot;hello comma world period&quot; types &quot;hello, world.&quot; Covers comma, period, full stop, colon, semicolon, question mark, exclamation mark, dash, hyphen, slash, backslash, new line and new paragraph. Jane leaves the word alone when you are talking about the symbol, as in &quot;add a comma&quot;.">
+                                    <CheckBox Style="{StaticResource JaneSwitch}"
+                                              IsChecked="{Binding SpokenSymbols}"
+                                              AutomationProperties.AutomationId="SpokenSymbols"
+                                              AutomationProperties.Name="Type a symbol when its name is spoken" />
+                                </c:SettingRow>
+                            </StackPanel>
+                        </c:SettingsGroup>
+
                         <c:SettingsGroup Header="While you are gaming"
                                          Description="Jane decides the GPU is busy from three signals combined, because no one of them is enough: the shell's notification state only sees exclusive fullscreen, and most modern games are borderless-windowed.">
                             <StackPanel>

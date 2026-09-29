@@ -222,8 +222,11 @@ public sealed class JaneHost : IAsyncDisposable
     /// Jane just put a space where they did not want one, and asking them to restart to find out
     /// whether that helped is the wrong shape of answer.
     /// </remarks>
-    private void OnTextSettingsChanged(TextSettings text) =>
+    private void OnTextSettingsChanged(TextSettings text)
+    {
         Orchestrator.AutoSpace = text.AutoSpace;
+        Orchestrator.SpokenForms = text.ToSpokenFormOptions();
+    }
     private void OnOverlaySettingsChanged(OverlaySettings overlay)
     {
         _overlaySettings = overlay;
@@ -463,7 +466,11 @@ public sealed class JaneHost : IAsyncDisposable
             formatter,
             injector,
             focus,
-            new OrchestratorOptions { AutoSpace = current.Text.AutoSpace },
+            new OrchestratorOptions
+            {
+                AutoSpace = current.Text.AutoSpace,
+                SpokenForms = current.Text.ToSpokenFormOptions(),
+            },
             contextSource,
             llm is null
                 ? UnavailableRewriter.Instance

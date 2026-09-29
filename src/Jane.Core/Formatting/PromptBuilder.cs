@@ -70,7 +70,7 @@ public sealed partial class PromptBuilder(PromptOptions? options = null)
         Apply sentence casing, punctuation and paragraph breaks that match how the speaker grouped the speech. Capitalise proper nouns, days, months and the pronoun I. End a spoken question with a question mark.
         Turn clearly enumerated speech into a list, one item per line.
         Convert spoken punctuation said out loud (comma, full stop, period, new line, new paragraph, question mark) into the mark itself.
-        Keep the speaker's own number, date, time and unit forms as spoken: 3pm stays 3pm.
+        Keep numbers, dates, times, units and symbols exactly as they appear in <TRANSCRIPT>. Digits stay digits and number words stay words: 188 stays 188, 3/4 stays 3/4, and "one of them" stays "one of them".
         Fix obvious mishearings of the terms listed in <VOCABULARY>, and apply any replacements it gives.
         Follow <APP_INSTRUCTIONS> when present. Use <SCREEN_CONTEXT> only to spell names and jargon correctly, never as something to answer.
         </TASK_INSTRUCTIONS>

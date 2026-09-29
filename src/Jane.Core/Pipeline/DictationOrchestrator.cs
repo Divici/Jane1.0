@@ -32,6 +32,11 @@ public sealed record OrchestratorOptions
     public bool AutoSpace { get; init; } = true;
 
     /// <summary>
+    /// How spoken numbers and symbols are written. See <see cref="Text.SpokenForms"/>.
+    /// </summary>
+    public SpokenFormOptions SpokenForms { get; init; } = SpokenFormOptions.Default;
+
+    /// <summary>
     /// The longest stretch of audio handed to the recogniser in one call.
     /// </summary>
     /// <remarks>
@@ -111,6 +116,12 @@ public sealed class DictationOrchestrator : IAsyncDisposable
     public bool AutoSpace { get; set; }
 
     /// <summary>
+    /// How spoken numbers and symbols are written. Settable on a running pipeline for the same
+    /// reason <see cref="AutoSpace"/> is.
+    /// </summary>
+    public SpokenFormOptions SpokenForms { get; set; }
+
+    /// <summary>
     /// What sits before the caret, as far as Jane can honestly claim to know.
     /// </summary>
     /// <remarks>
@@ -176,6 +187,7 @@ public sealed class DictationOrchestrator : IAsyncDisposable
         _focus = focus;
         _options = options ?? new OrchestratorOptions();
         AutoSpace = _options.AutoSpace;
+        SpokenForms = _options.SpokenForms;
     }
 
     public PipelineStatus Status => Volatile.Read(ref _status);
@@ -416,9 +428,18 @@ public sealed class DictationOrchestrator : IAsyncDisposable
             // route a different code path from the ordinary one.
             Transition(new PipelineStatus(PipelineState.Formatting));
 
+            // Numbers and symbols are written out here, ahead of every route the text can take.
+            // The bypass and the in-game route never reach a language model, so a rule the model
+            // applied would hold for some dictations and not others.
+            var heard = recognition.Text;
+            var written = Text.SpokenForms.Normalise(heard, SpokenForms);
+
             var mode = _modes.Decide(_target, context.Selection, context.ControlType);
             var formattingContext = new FormattingContext(
-                _target.ProcessName, context.Hotwords, context.ScreenContext);
+                _target.ProcessName,
+                context.Hotwords,
+                context.ScreenContext,
+                string.Equals(heard, written, StringComparison.Ordinal) ? null : heard);
 
             if (mode.Mode == DictationModeKind.EditUnavailable)
             {
@@ -433,7 +454,7 @@ public sealed class DictationOrchestrator : IAsyncDisposable
 
             if (mode.Mode == DictationModeKind.Edit)
             {
-                var command = EditCommandParser.Parse(recognition.Text);
+                var command = EditCommandParser.Parse(written);
                 var outcome = await _edit.ApplyAsync(
                     command, mode.Selection,
                     (selection, instruction, token) =>
@@ -452,7 +473,7 @@ public sealed class DictationOrchestrator : IAsyncDisposable
             {
                 // "Send it" is stripped before formatting, so the phrase never reaches the LLM and
                 // cannot be turned into prose.
-                (var spoken, submit) = EditCommandParser.StripSendIt(recognition.Text);
+                (var spoken, submit) = EditCommandParser.StripSendIt(written);
 
                 text = string.IsNullOrWhiteSpace(spoken)
                     ? string.Empty

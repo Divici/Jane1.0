@@ -234,7 +234,7 @@ public sealed class TranscriptFormatter : ITranscriptFormatter
         _log.Record(new FormattingOutcome(
             At: _time.GetUtcNow(),
             ProcessName: context.TargetProcessName,
-            RawTranscript: transcript,
+            RawTranscript: context.Recognised ?? transcript,
             FinalText: finalText,
             Route: route,
             Bypass: decision,

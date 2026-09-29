@@ -5,6 +5,7 @@ using Jane.Core.Abstractions;
 using Jane.Core.Instructions;
 using Jane.Core.Settings;
 using Jane.Core.Storage;
+using Jane.Core.Text;
 using Jane.Core.Vocabulary;
 using Jane.Speech;
 
@@ -30,6 +31,12 @@ public sealed record InGameChoice(InGameBehaviour Behaviour, string Name, string
 
 /// <summary>When Jane holds the microphone open, in words.</summary>
 public sealed record ActivationChoice(MicrophoneActivation Activation, string Name, string Description)
+{
+    public override string ToString() => Name;
+}
+
+/// <summary>How spoken numbers are written, in words.</summary>
+public sealed record NumberStyleChoice(NumberStyle Style, string Name, string Description)
 {
     public override string ToString() => Name;
 }
@@ -682,6 +689,74 @@ public sealed class SettingsViewModel : ObservableObject, IDisposable
             }
 
             Persist(s => s with { Text = s.Text with { AutoSpace = value } });
+            Raise();
+        }
+    }
+
+    public IReadOnlyList<NumberStyleChoice> NumberStyleChoices { get; } =
+    [
+        new(
+            NumberStyle.DigitsExceptLoneOne,
+            "Digits, except a lone \"one\"",
+            "\"Twenty five\" becomes 25 and \"one eight eight\" becomes 188. A \"one\" on its own stays a word, because \"one of them\" is said far more often than the figure -- unless it is plainly a number, as in \"step one\" or \"one or two\"."),
+        new(
+            NumberStyle.Digits,
+            "Always digits",
+            "Every spoken number becomes digits, including every \"one\". \"No one\" will be written \"no 1\"."),
+        new(
+            NumberStyle.AsSpoken,
+            "As spoken",
+            "Numbers are left exactly as the speech engine wrote them, which is usually in words."),
+    ];
+
+    /// <summary>How a number that was spoken is written.</summary>
+    public NumberStyle Numbers
+    {
+        get => _current.Text.Numbers;
+        set
+        {
+            if (value == _current.Text.Numbers)
+            {
+                return;
+            }
+
+            Persist(s => s with { Text = s.Text with { Numbers = value } });
+            Raise();
+            Raise(nameof(NumberStyleChoiceValue));
+        }
+    }
+
+    public NumberStyleChoice NumberStyleChoiceValue
+    {
+        get => NumberStyleChoices.First(c => c.Style == Numbers);
+        set
+        {
+            if (value is not null)
+            {
+                Numbers = value.Style;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Whether saying the name of a symbol types the symbol.
+    /// </summary>
+    /// <remarks>
+    /// A switch because the rule is a judgement. Jane leaves "add a comma" alone and turns "hello
+    /// comma world" into a comma, and somebody who writes about punctuation for a living will
+    /// meet the cases where that judgement is wrong.
+    /// </remarks>
+    public bool SpokenSymbols
+    {
+        get => _current.Text.SpokenSymbols;
+        set
+        {
+            if (value == _current.Text.SpokenSymbols)
+            {
+                return;
+            }
+
+            Persist(s => s with { Text = s.Text with { SpokenSymbols = value } });
             Raise();
         }
     }

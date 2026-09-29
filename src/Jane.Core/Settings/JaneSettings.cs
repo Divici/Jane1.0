@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using Jane.Core.Abstractions;
+using Jane.Core.Text;
 
 namespace Jane.Core.Settings;
 
@@ -133,7 +134,20 @@ public sealed record OverlaySettings(
 /// every sentence after the first. Off suits anyone dictating somewhere Jane's idea of a word
 /// boundary is wrong -- a code editor driving its own completion, say.
 /// </param>
-public sealed record TextSettings(bool AutoSpace = true);
+/// <param name="Numbers">
+/// How a number that was spoken is written. Digits by default, with a "one" on its own left as a
+/// word, because "one of them" is said far more often than the figure.
+/// </param>
+/// <param name="SpokenSymbols">
+/// Whether saying the name of a symbol -- comma, period, dash, slash -- types the symbol.
+/// </param>
+public sealed record TextSettings(
+    bool AutoSpace = true,
+    NumberStyle Numbers = NumberStyle.DigitsExceptLoneOne,
+    bool SpokenSymbols = true)
+{
+    public SpokenFormOptions ToSpokenFormOptions() => new(Numbers, SpokenSymbols);
+}
 
 /// <param name="MinimumFreeVramBytes">
 /// Below this, the GPU counts as contended even with no game detected. Loading a 2.5 GB model

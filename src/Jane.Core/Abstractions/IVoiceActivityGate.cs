@@ -38,10 +38,15 @@ public interface IVoiceActivityGate
 
 /// <param name="TargetProcessName">Drives per-app Custom Instructions from Phase 10.</param>
 /// <param name="Hotwords">Dictionary terms and Deep Context extractions, for the prompt side.</param>
+/// <param name="Recognised">
+/// The recogniser's own words, when the transcript being formatted has already had its numbers
+/// and symbols written out. Kept only so the record can show what was actually heard.
+/// </param>
 public sealed record FormattingContext(
     string TargetProcessName,
     IReadOnlyList<string>? Hotwords = null,
-    string? ScreenContext = null)
+    string? ScreenContext = null,
+    string? Recognised = null)
 {
     public static FormattingContext Empty { get; } = new(string.Empty);
 }
