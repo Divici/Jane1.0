@@ -4,6 +4,10 @@
     <!-- .NET 6 is also installed on this machine; every project pins net10.0 explicitly so
          a stray global.json or SDK roll-forward cannot silently retarget the build. -->
     <LangVersion>latest</LangVersion>
+
+    <!-- One version for every assembly and for the installer. build/make-setup.ps1 reads it
+         from here, and the release workflow overrides it with the tag. -->
+    <Version>1.1.0</Version>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>

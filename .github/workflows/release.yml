@@ -1,0 +1,130 @@
+name: release
+
+# Pushing a tag like v1.2.3 builds JaneSetup.exe, installs and uninstalls it on a clean machine,
+# and publishes it as a GitHub release. The README links to the newest one.
+#
+# Running it by hand builds and tests the installer without publishing anything, and keeps the
+# result as a build artefact.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to stamp on a trial build, such as 1.2.3. Nothing is published.'
+        required: true
+        default: '0.0.1'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  setup:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      # actions/setup-dotnet v6.0.0
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          global-json-file: global.json
+
+      - name: Decide the version
+        id: version
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
+          REQUESTED: ${{ inputs.version }}
+        run: |
+          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:TAG.TrimStart('v') } else { $env:REQUESTED }
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "'$version' is not a version like 1.2.3." }
+          "value=$version" >> $env:GITHUB_OUTPUT
+
+      # The tests that need no microphone, GPU or desktop. The rest need hardware a runner does
+      # not have, and are run on a real machine before a tag is pushed.
+      - name: Test
+        shell: pwsh
+        run: dotnet run --project tests/Jane.Core.Tests -c Release
+
+      - name: Fetch Inno Setup
+        shell: pwsh
+        run: ./build/get-innosetup.ps1
+
+      - name: Build the installer
+        shell: pwsh
+        run: ./build/make-setup.ps1 -Version '${{ steps.version.outputs.value }}'
+
+      - name: Install it, check it, uninstall it
+        shell: pwsh
+        run: |
+          $setup = Resolve-Path 'artifacts/setup/JaneSetup.exe'
+          $target = Join-Path $env:RUNNER_TEMP 'jane-install'
+
+          $install = Start-Process -FilePath $setup -Wait -PassThru -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$target`"", "/LOG=`"$env:RUNNER_TEMP\install.log`"")
+          if ($install.ExitCode -ne 0) {
+            Get-Content "$env:RUNNER_TEMP\install.log" -ErrorAction SilentlyContinue | Select-Object -Last 40
+            throw "The installer exited with code $($install.ExitCode)."
+          }
+
+          foreach ($file in 'Jane.exe', 'NOTICE.md', 'LICENSE', 'unins000.exe') {
+            if (-not (Test-Path (Join-Path $target $file))) { throw "$file was not installed." }
+          }
+
+          $run = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'Jane' -ErrorAction SilentlyContinue
+          if (-not $run) { throw 'The autostart entry was not written.' }
+          if ($run.Jane -ne "`"$target\Jane.exe`"") { throw "Autostart points at $($run.Jane)." }
+
+          $shortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Jane.lnk'
+          if (-not (Test-Path $shortcut)) { throw 'The Start menu shortcut was not created.' }
+
+          $stamped = (Get-Item (Join-Path $target 'Jane.exe')).VersionInfo.ProductVersion
+          if (-not $stamped.StartsWith('${{ steps.version.outputs.value }}')) {
+            throw "Jane.exe is stamped $stamped, not ${{ steps.version.outputs.value }}."
+          }
+
+          $uninstall = Start-Process -FilePath (Join-Path $target 'unins000.exe') -Wait -PassThru -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART')
+          if ($uninstall.ExitCode -ne 0) { throw "The uninstaller exited with code $($uninstall.ExitCode)." }
+
+          Start-Sleep -Seconds 3
+          if (Test-Path (Join-Path $target 'Jane.exe')) { throw 'Uninstalling left Jane.exe behind.' }
+          if (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'Jane' -ErrorAction SilentlyContinue) {
+            throw 'Uninstalling left the autostart entry behind.'
+          }
+
+      # actions/upload-artifact v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: JaneSetup-${{ steps.version.outputs.value }}
+          path: |
+            artifacts/setup/JaneSetup.exe
+            artifacts/setup/JaneSetup.exe.sha256
+          if-no-files-found: error
+
+      - name: Publish the release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          $hash = (Get-Content 'artifacts/setup/JaneSetup.exe.sha256' -Raw).Split(' ')[0]
+          $notes = (Get-Content 'build/installer/release-notes.md' -Raw).Replace('{SHA256}', $hash)
+          Set-Content -Path notes.md -Value $notes -Encoding utf8
+
+          gh release create $env:TAG `
+            'artifacts/setup/JaneSetup.exe' `
+            'artifacts/setup/JaneSetup.exe.sha256' `
+            --title "Jane $($env:TAG.TrimStart('v'))" `
+            --notes-file notes.md `
+            --generate-notes `
+            --verify-tag

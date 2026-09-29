@@ -1,13 +1,14 @@
 <#
 .SYNOPSIS
-    Publishes Jane as a single self-contained win-x64 binary, with the uiAccess manifest.
+    Publishes Jane as a single self-contained win-x64 binary.
 
 .DESCRIPTION
     Two things differ from an ordinary `dotnet publish`:
 
     1. -p:JaneUiAccess=true selects app.uiaccess.manifest instead of app.manifest. Development
        builds must NOT use it: Windows refuses to start an unsigned uiAccess binary from outside a
-       secure location, so a debug build carrying it cannot be launched at all.
+       secure location, so a debug build carrying it cannot be launched at all. Neither must the
+       public installer, which is unsigned: build/make-setup.ps1 passes -NoUiAccess.
 
     2. The output is staged with NOTICE.md and, optionally, tools/ollama, because the installer
        copies a directory rather than a file.
@@ -27,7 +28,14 @@ param(
     # who already ran build/get-ollama.ps1 does not need a second copy.
     [switch]$IncludeOllama,
 
-    [switch]$SelfContained = $true
+    [switch]$SelfContained = $true,
+
+    # Publishes with the ordinary manifest. For a build that will not be signed by a certificate
+    # the target machine trusts -- which is every build handed to somebody else.
+    [switch]$NoUiAccess,
+
+    # Stamped on Jane.exe. Defaults to <Version> in Directory.Build.props.
+    [string]$Version
 )
 
 $ErrorActionPreference = 'Stop'
@@ -51,10 +59,12 @@ $arguments = @(
     "--self-contained=$($SelfContained.ToString().ToLowerInvariant())",
     '-p:PublishSingleFile=true',
     '-p:IncludeNativeLibrariesForSelfExtract=true',
-    '-p:JaneUiAccess=true',
+    "-p:JaneUiAccess=$((-not $NoUiAccess).ToString().ToLowerInvariant())",
     '-p:DebugType=embedded',
     '-o', $OutputDirectory
 )
+
+if ($Version) { $arguments += "-p:Version=$Version" }
 
 & dotnet @arguments
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE" }
@@ -84,6 +94,13 @@ if ($IncludeOllama) {
 $size = [math]::Round(((Get-ChildItem $OutputDirectory -Recurse -File | Measure-Object Length -Sum).Sum / 1MB), 1)
 Write-Host ''
 Write-Host "Published $size MB to $OutputDirectory"
+if ($NoUiAccess) {
+    Write-Host ''
+    Write-Host 'This binary does not ask for uiAccess. It runs unsigned and from anywhere, and it'
+    Write-Host 'cannot type into windows that are running as administrator.'
+    exit 0
+}
+
 Write-Host ''
 Write-Host 'This binary declares uiAccess="true". Windows will refuse to start it until it is'
 Write-Host 'both signed and installed under %ProgramFiles%. Next:'

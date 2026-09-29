@@ -6,9 +6,26 @@ Hold a key, speak, release. The text appears in whatever window you were already
 editor, your browser, a chat box, a terminal. No account, no subscription, no audio leaving the
 machine. Every model runs locally on the CPU.
 
-> **Status:** a personal project, built and used daily on one machine. It is complete and it works,
-> but it is not a packaged product — there is no installer, no auto-update, and no signed release.
-> See [Building from source](#building-from-source).
+## Download
+
+**[Download JaneSetup.exe](https://github.com/Divici/Jane1.0/releases/latest/download/JaneSetup.exe)**
+and run it. That is the whole installation: no administrator account, no build tools, nothing
+else to install first.
+
+- **Windows will warn you.** The installer is not code-signed, so SmartScreen says it does not
+  recognise the publisher. Choose **More info**, then **Run anyway**.
+- **The first run downloads the models.** Jane fetches its speech model and offers to fetch the
+  language model that tidies up what you say. Together they need about 6 GB of disk. After that,
+  nothing you dictate leaves your machine.
+- **One thing it cannot do.** A downloaded Jane cannot type into a window that is running as
+  administrator. That needs a signed build; see [Signing and uiAccess](#signing-and-uiaccess).
+- **To remove it**, use *Settings → Apps → Installed apps*. You are asked whether to keep your
+  dictionary and history.
+
+Requires 64-bit Windows 10 (2004 or later) or Windows 11.
+
+> **Status:** a personal project, built and used daily on one machine. It is complete and it
+> works. There is no auto-update and no signed release: to update, download the installer again.
 
 ---
 
@@ -99,7 +116,7 @@ is unpacked.
 Transcript history is stored in plaintext SQLite at `%LOCALAPPDATA%\Jane\jane.db` and kept until
 you delete it. **Audio is never written to disk.**
 
-## Requirements
+## Requirements for building from source
 
 - Windows 11 (Windows 10 will probably work; it is untested)
 - [.NET 10 SDK](https://dotnet.microsoft.com/download) 10.0.400 or later
@@ -129,6 +146,21 @@ To install it properly — under `%ProgramFiles%`, starting with Windows:
 ```
 
 `build/ship.ps1` does publish, sign and install in one step, for updating an existing install.
+
+### Building the installer
+
+```powershell
+./build/get-innosetup.ps1    # once: fetches Inno Setup into tools/, verified by SHA-256
+./build/make-setup.ps1       # writes artifacts/setup/JaneSetup.exe
+```
+
+A release is cut by pushing a tag. The workflow in `.github/workflows/release.yml` builds the
+installer, installs and uninstalls it on a clean machine, and only then publishes it:
+
+```powershell
+git tag v1.1.0
+git push origin v1.1.0
+```
 
 ### Signing and uiAccess
 

@@ -46,6 +46,8 @@ public sealed partial class BuildScriptTests
     [InlineData("sign-uiaccess.ps1")]
     [InlineData("install.ps1")]
     [InlineData("ship.ps1")]
+    [InlineData("get-innosetup.ps1")]
+    [InlineData("make-setup.ps1")]
     public void ScriptParsesUnderWindowsPowerShell(string script)
     {
         var path = PackagingTests.FindRepoFile(Path.Combine("build", script));
@@ -68,6 +70,8 @@ public sealed partial class BuildScriptTests
     [InlineData("sign-uiaccess.ps1")]
     [InlineData("install.ps1")]
     [InlineData("ship.ps1")]
+    [InlineData("get-innosetup.ps1")]
+    [InlineData("make-setup.ps1")]
     public void NoExpressionIsContinuedOntoALineStartingWithAMemberAccess(string script)
     {
         // Belt and braces alongside the parse check: the parser catches this particular shape, but
