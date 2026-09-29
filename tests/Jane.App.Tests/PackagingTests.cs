@@ -115,6 +115,36 @@ public sealed class PackagingTests
     private static XElement LoadManifest(string manifestFile) =>
         XDocument.Load(FindRepoFile(Path.Combine("src", "Jane.App", manifestFile))).Root!;
 
+    [Fact]
+    public void NoSourceFileIsHiddenFromGitByAnIgnoreRule()
+    {
+        // The first release build failed on a clean machine: ".gitignore" said "models/", meaning
+        // downloaded weights, and on Windows that also matched src/Jane.Core/Models/. The file in
+        // it was never committed, and nothing noticed because it was always there locally.
+        var root = Path.GetDirectoryName(FindRepoFile("Jane.sln"))!;
+
+        var git = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
+            "git", "ls-files --others --ignored --exclude-standard -- src tests build .github")
+        {
+            WorkingDirectory = root,
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        })!;
+
+        var output = git.StandardOutput.ReadToEnd();
+        git.WaitForExit();
+        Assert.Equal(0, git.ExitCode);
+
+        var hidden = output
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(path => !path.Split('/').Any(part => part is "bin" or "obj" or "TestResults"))
+            .Where(path => Path.GetExtension(path) is ".cs" or ".xaml" or ".csproj" or ".ps1" or ".iss" or ".yml" or ".props")
+            .ToArray();
+
+        Assert.True(hidden.Length == 0, "Ignored by git but needed to build: " + string.Join(", ", hidden));
+    }
+
     internal static string FindRepoFile(string relativePath)
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

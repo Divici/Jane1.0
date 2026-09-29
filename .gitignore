@@ -11,7 +11,11 @@ tools/
 
 # Model weights are never committed; ModelDownloader fetches and SHA-256-verifies them
 # into %LOCALAPPDATA%\Jane\models on first run.
-models/
+#
+# Anchored to the repository root on purpose. A bare "models/" also matched
+# src/Jane.Core/Models/ on a case-insensitive file system, so a source file was never committed
+# and the project built only on the machine it was written on.
+/models/
 *.onnx
 *.bin
 *.gguf
