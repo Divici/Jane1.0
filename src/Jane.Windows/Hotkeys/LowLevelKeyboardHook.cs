@@ -24,10 +24,28 @@ namespace Jane.Windows.Hotkeys;
 /// owns the hook and pumps its message queue, and a pump thread that drains the ring and raises
 /// events. Keeping the pump off the hook thread is what stops a slow subscriber from becoming a
 /// hook-callback overrun.
+/// <para>
+/// It also counts, and only counts, the keys and mouse buttons the user presses. Automatic spacing
+/// leans on Jane's memory of what it last typed, and that memory is only good until somebody
+/// touches the window. A second hook, <c>WH_MOUSE_LL</c>, lives on the same thread under the same
+/// two rules, because a click moves a caret just as surely as a key does.
+/// </para>
 /// </remarks>
-public sealed partial class LowLevelKeyboardHook : IHotkeyListener, IKeyboardHookHandle
+public sealed partial class LowLevelKeyboardHook : IHotkeyListener, IKeyboardHookHandle, IUserActivityMonitor
 {
     private const int WhKeyboardLl = 13;
+    private const int WhMouseLl = 14;
+
+    // KBDLLHOOKSTRUCT: vkCode, scanCode, flags. MSLLHOOKSTRUCT: pt (two LONGs), mouseData, flags.
+    private const int KeyboardFlagsOffset = 8;
+    private const int MouseFlagsOffset = 12;
+    private const int LlkhfInjected = 0x10;
+    private const int LlmhfInjected = 0x01;
+
+    private const int WmLButtonDown = 0x0201;
+    private const int WmRButtonDown = 0x0204;
+    private const int WmMButtonDown = 0x0207;
+    private const int WmXButtonDown = 0x020B;
     private const int HcAction = 0;
     private const nint WmKeyDown = 0x0100;
     private const nint WmSysKeyDown = 0x0104;
@@ -54,7 +72,9 @@ public sealed partial class LowLevelKeyboardHook : IHotkeyListener, IKeyboardHoo
     private HotkeyOptions? _pendingOptions;
     private uint _hookThreadId;
     private nint _hookHandle;
+    private nint _mouseHookHandle;
     private long _longestCallbackTicks;
+    private long _userActivity;
     private int _dictationActive;
     private int _pipelineActive;
 
@@ -84,6 +104,9 @@ public sealed partial class LowLevelKeyboardHook : IHotkeyListener, IKeyboardHoo
     public HotkeyMode Mode { get; private set; }
 
     public bool IsHeld => _held;
+
+    /// <inheritdoc />
+    public long Version => Interlocked.Read(ref _userActivity);
 
     /// <summary>
     /// Re-installs the hook when Windows drops it. Owned here rather than by the caller so the
@@ -206,9 +229,18 @@ public sealed partial class LowLevelKeyboardHook : IHotkeyListener, IKeyboardHoo
     /// all with it. A key Jane hides, it hides completely.
     /// </para>
     /// </remarks>
-    public bool RecordHookEvent(int virtualKey, bool isKeyDown, long timestamp)
+    /// <param name="injected">
+    /// The event came from <c>SendInput</c> rather than a keyboard. Jane's own injection arrives
+    /// here like everything else, and must not be mistaken for the user typing.
+    /// </param>
+    public bool RecordHookEvent(int virtualKey, bool isKeyDown, long timestamp, bool injected = false)
     {
         _queue.TryEnqueue(new RawKeyEvent(virtualKey, isKeyDown, timestamp));
+
+        if (isKeyDown && !injected && !IsPartOfBinding(virtualKey))
+        {
+            Interlocked.Increment(ref _userActivity);
+        }
 
         if (virtualKey != HotkeyBinding.VkEscape)
         {
@@ -225,6 +257,54 @@ public sealed partial class LowLevelKeyboardHook : IHotkeyListener, IKeyboardHoo
         var swallow = Volatile.Read(ref _dictationActive) != 0 || Volatile.Read(ref _pipelineActive) != 0;
         Volatile.Write(ref _swallowedEscapeDown, swallow ? 1 : 0);
         return swallow;
+    }
+
+    /// <summary>
+    /// The whole body of the mouse hook procedure. Counts button presses and nothing else.
+    /// </summary>
+    /// <remarks>
+    /// Movement and the wheel are ignored: neither moves a caret, and movement arrives hundreds of
+    /// times a second. Nothing is ever swallowed and nothing about the event is kept -- not the
+    /// position, not the button.
+    /// </remarks>
+    public void RecordMouseEvent(int message, bool injected)
+    {
+        if (injected)
+        {
+            return;
+        }
+
+        if (message is WmLButtonDown or WmRButtonDown or WmMButtonDown or WmXButtonDown)
+        {
+            Interlocked.Increment(ref _userActivity);
+        }
+    }
+
+    /// <summary>
+    /// Whether a key is the dictation hotkey or one of the modifiers it requires.
+    /// </summary>
+    /// <remarks>
+    /// Indexed rather than enumerated: this runs inside the hook procedure, where an enumerator
+    /// would be an allocation.
+    /// </remarks>
+    private bool IsPartOfBinding(int virtualKey)
+    {
+        var binding = Binding;
+        if (virtualKey == binding.VirtualKey)
+        {
+            return true;
+        }
+
+        var modifiers = binding.RequiresModifiers;
+        for (var i = 0; i < modifiers.Count; i++)
+        {
+            if (modifiers[i] == virtualKey)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -293,11 +373,29 @@ public sealed partial class LowLevelKeyboardHook : IHotkeyListener, IKeyboardHoo
         // Letting the runtime marshal the struct would allocate, which is exactly what is banned.
         var virtualKey = Marshal.ReadInt32(lParam);
         var isKeyDown = wParam == WmKeyDown || wParam == WmSysKeyDown;
+        var injected = (Marshal.ReadInt32(lParam, KeyboardFlagsOffset) & LlkhfInjected) != 0;
 
-        var swallow = hook.RecordHookEvent(virtualKey, isKeyDown, started);
+        var swallow = hook.RecordHookEvent(virtualKey, isKeyDown, started, injected);
         hook.RecordCallbackDuration(Stopwatch.GetTimestamp() - started);
 
         return swallow ? 1 : CallNextHookEx(nint.Zero, nCode, wParam, lParam);
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall)])]
+    private static nint MouseHookProc(int nCode, nint wParam, nint lParam)
+    {
+        var hook = s_active;
+        if (hook is not null && nCode == HcAction)
+        {
+            var started = Stopwatch.GetTimestamp();
+            var injected = (Marshal.ReadInt32(lParam, MouseFlagsOffset) & LlmhfInjected) != 0;
+
+            hook.RecordMouseEvent((int)wParam, injected);
+            hook.RecordCallbackDuration(Stopwatch.GetTimestamp() - started);
+        }
+
+        // Never swallowed, whatever happened above.
+        return CallNextHookEx(nint.Zero, nCode, wParam, lParam);
     }
 
     private void RecordCallbackDuration(long ticks)
@@ -364,7 +462,13 @@ public sealed partial class LowLevelKeyboardHook : IHotkeyListener, IKeyboardHoo
         var proc = (nint)(delegate* unmanaged[Stdcall]<int, nint, nint, nint>)&HookProc;
         var handle = SetWindowsHookExW(WhKeyboardLl, proc, GetModuleHandleW(nint.Zero), 0);
 
+        // Best effort. Without it a click goes unnoticed and spacing is what it was before the
+        // monitor existed; the hotkey itself does not depend on it, so a refusal is not a failure.
+        var mouseProc = (nint)(delegate* unmanaged[Stdcall]<int, nint, nint, nint>)&MouseHookProc;
+        var mouseHandle = SetWindowsHookExW(WhMouseLl, mouseProc, GetModuleHandleW(nint.Zero), 0);
+
         Volatile.Write(ref _hookHandle, handle);
+        Volatile.Write(ref _mouseHookHandle, mouseHandle);
         Volatile.Write(ref _longestCallbackTicks, 0);
     }
 
@@ -374,6 +478,12 @@ public sealed partial class LowLevelKeyboardHook : IHotkeyListener, IKeyboardHoo
         if (handle != nint.Zero)
         {
             UnhookWindowsHookEx(handle);
+        }
+
+        var mouseHandle = Interlocked.Exchange(ref _mouseHookHandle, nint.Zero);
+        if (mouseHandle != nint.Zero)
+        {
+            UnhookWindowsHookEx(mouseHandle);
         }
     }
 

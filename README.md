@@ -164,8 +164,10 @@ its own, so `-class Jane.Windows.Tests.<Name>` is the way through it.
 
 Kept honestly, and at greater length, in the project's design notes:
 
-- Automatic spacing between consecutive dictations works from what Jane itself last typed, so it
-  can be wrong if you move the caret yourself between dictations.
+- Automatic spacing reads the character before the caret from the application when it can. Where
+  an application will not say, it works from what Jane last typed there and gives up as soon as
+  you type or click -- so after moving the caret by hand in such an application, Jane adds no
+  space and you may need to add one yourself.
 - The evaluation corpus is text-to-speech, not recorded human speech, so the absolute word error
   rate is optimistic. Every A/B comparison built on it is still sound.
 - Deep Context in Chromium depends on an accessibility tree that Chrome builds lazily.

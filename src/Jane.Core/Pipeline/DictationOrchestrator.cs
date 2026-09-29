@@ -72,6 +72,7 @@ public sealed class DictationOrchestrator : IAsyncDisposable
     private readonly EditModeHandler _edit;
     private readonly ISelectionRewriter _rewriter;
     private readonly ISubmitter? _submitter;
+    private readonly IUserActivityMonitor _activity;
     private readonly OrchestratorOptions _options;
     private readonly IJaneLog _log;
 
@@ -93,6 +94,13 @@ public sealed class DictationOrchestrator : IAsyncDisposable
     private TargetWindow _spacedAgainst = TargetWindow.None;
 
     /// <summary>
+    /// The activity counter as it stood when <see cref="_lastInjected"/> was written. Any other
+    /// value means the user has typed or clicked since, and the memory describes a caret that may
+    /// no longer be there.
+    /// </summary>
+    private long _activityAtInjection;
+
+    /// <summary>
     /// Whether consecutive dictations into one window are separated by a space.
     /// </summary>
     /// <remarks>
@@ -106,15 +114,32 @@ public sealed class DictationOrchestrator : IAsyncDisposable
     /// What sits before the caret, as far as Jane can honestly claim to know.
     /// </summary>
     /// <remarks>
-    /// Only its own last injection into this very window counts. UIA could in principle be asked,
-    /// but it returns the enclosing paragraph without a caret offset, costs round trips inside an
-    /// 80ms budget, and is refused outright by a good share of the applications people dictate
-    /// into. Returning null means "unknown", and unknown means add nothing.
+    /// <para>
+    /// The application's own answer wins whenever it gave one. Jane's memory of what it last typed
+    /// was the only source originally, and it was wrong every time the user pressed space, deleted
+    /// a word or clicked somewhere else between dictations -- each of which produced a space
+    /// nobody asked for.
+    /// </para>
+    /// <para>
+    /// The memory remains as the fallback for the many applications that serve no text over UI
+    /// Automation, and is trusted only while it can still be true: same window, and no key press
+    /// or click since. Returning null means "unknown", and unknown means add nothing.
+    /// </para>
     /// </remarks>
-    private string? PrecedingText() =>
-        _lastInjected is not null && !_spacedAgainst.IsNone && _target.MatchesIdentity(_spacedAgainst)
-            ? _lastInjected
-            : null;
+    private string? PrecedingText(DictationContext context)
+    {
+        if (context.PrecedingText is { } reported)
+        {
+            return reported;
+        }
+
+        return _lastInjected is not null
+            && !_spacedAgainst.IsNone
+            && _target.MatchesIdentity(_spacedAgainst)
+            && _activity.Version == _activityAtInjection
+                ? _lastInjected
+                : null;
+    }
 
     public DictationOrchestrator(
         IAudioSource audio,
@@ -129,9 +154,11 @@ public sealed class DictationOrchestrator : IAsyncDisposable
         ISubmitter? submitter = null,
         ModeSelector? modes = null,
         UndoStack? undo = null,
-        IJaneLog? log = null)
+        IJaneLog? log = null,
+        IUserActivityMonitor? activity = null)
     {
         _log = log ?? NullLog.Instance;
+        _activity = activity ?? NullUserActivityMonitor.Instance;
         _context = context ?? NullContextSource.Instance;
         _modes = modes ?? new ModeSelector();
         _edit = new EditModeHandler(undo ?? new UndoStack());
@@ -443,7 +470,7 @@ public sealed class DictationOrchestrator : IAsyncDisposable
             // there would land inside the rewritten span.
             if (AutoSpace && mode.Mode != DictationModeKind.Edit)
             {
-                text = SpacingPolicy.Apply(text, PrecedingText());
+                text = SpacingPolicy.Apply(text, PrecedingText(context));
             }
 
             Transition(new PipelineStatus(PipelineState.Injecting));
@@ -464,6 +491,10 @@ public sealed class DictationOrchestrator : IAsyncDisposable
             // nothing on screen to be spaced from.
             _lastInjected = submit ? null : text;
             _spacedAgainst = submit ? TargetWindow.None : _target;
+
+            // Read after the injection, so Jane's own keystrokes and paste chord -- which the
+            // monitor ignores anyway -- can never be mistaken for the user's.
+            _activityAtInjection = _activity.Version;
 
             if (submit && _submitter is not null)
             {

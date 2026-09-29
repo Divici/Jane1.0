@@ -442,4 +442,74 @@ public sealed class OrchestratorTests
 
         Assert.Equal(["Hello there.", "How are you?"], harness.Injector.Injected);
     }
+
+    [Fact]
+    public async Task ASpaceAlreadyBeforeTheCaretIsNotDoubled()
+    {
+        var harness = new Harness();
+
+        await harness.DictateAsync("Hello there.");
+
+        // The user pressed space themselves. Jane's memory still says the window ends in a full
+        // stop; the window says otherwise, and the window is the one that is right.
+        harness.Context = DictationContext.Empty with { PrecedingText = " " };
+        await harness.DictateAsync("How are you?");
+
+        Assert.Equal(["Hello there.", "How are you?"], harness.Injector.Injected);
+    }
+
+    [Fact]
+    public async Task TextBeforeTheCaretIsSpacedFromEvenOnTheFirstDictation()
+    {
+        var harness = new Harness
+        {
+            Context = DictationContext.Empty with { PrecedingText = "d" },
+        };
+
+        await harness.DictateAsync("How are you?");
+
+        // No memory at all -- Jane has typed nothing here -- but the application reported a letter
+        // hard against the caret, so gluing a sentence to it would be wrong.
+        Assert.Equal(" How are you?", Assert.Single(harness.Injector.Injected));
+    }
+
+    [Fact]
+    public async Task ACaretAtTheStartOfTheDocumentGetsNoSpace()
+    {
+        var harness = new Harness();
+
+        await harness.DictateAsync("Hello there.");
+
+        // Select-all, delete, dictate again. Empty is a known answer, not a missing one.
+        harness.Context = DictationContext.Empty with { PrecedingText = string.Empty };
+        await harness.DictateAsync("How are you?");
+
+        Assert.Equal("How are you?", harness.Injector.Injected[^1]);
+    }
+
+    [Fact]
+    public async Task TypingOrClickingSinceTheLastDictationDiscardsTheMemory()
+    {
+        var harness = new Harness();
+
+        await harness.DictateAsync("Hello there.");
+        harness.Activity.UserDidSomething();
+        await harness.DictateAsync("How are you?");
+
+        // The window will not say what is before the caret and the user has touched it since, so
+        // Jane no longer knows. Not knowing means adding nothing.
+        Assert.Equal(["Hello there.", "How are you?"], harness.Injector.Injected);
+    }
+
+    [Fact]
+    public async Task ActivityBeforeADictationDoesNotSpoilTheOneAfterIt()
+    {
+        var harness = new Harness();
+
+        harness.Activity.UserDidSomething();
+        await harness.DictateAsync("Hello there.");
+        await harness.DictateAsync("How are you?");
+
+        Assert.Equal(["Hello there.", " How are you?"], harness.Injector.Injected);
+    }
 }

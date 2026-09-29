@@ -38,6 +38,10 @@ public sealed record ContextReadOptions
 /// for applications that draw their own caret and create no system one.
 /// </param>
 /// <param name="RoundTrips">Cross-process calls the read cost. Zero when nothing was asked.</param>
+/// <param name="Preceding">
+/// The character before the caret, for automatic spacing. Null when unknown, empty at the very
+/// start. Never set on a read that was refused or thrown away.
+/// </param>
 public sealed record ContextRead(
     ContextOutcome Outcome,
     ContextHints Hints,
@@ -45,7 +49,8 @@ public sealed record ContextRead(
     string? Detail = null,
     CaretRect? Caret = null,
     TimeSpan Elapsed = default,
-    int RoundTrips = 0)
+    int RoundTrips = 0,
+    string? Preceding = null)
 {
     public static ContextRead None { get; } =
         new(ContextOutcome.NotAttempted, ContextHints.Empty, TargetWindow.None);
@@ -345,7 +350,8 @@ public sealed class UiaContextReader : IDisposable
             raw.Detail,
             raw.Caret,
             raw.Elapsed,
-            raw.RoundTrips);
+            raw.RoundTrips,
+            raw.Preceding);
     }
 
     private ContextReadHandle Refuse(ContextRead read)

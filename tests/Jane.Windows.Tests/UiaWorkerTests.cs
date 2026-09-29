@@ -374,6 +374,69 @@ public sealed class UiaWorkerTests
         }
     }
 
+    [Fact]
+    public void TheCharacterBeforeTheCaretSurvivesInterpretation()
+    {
+        var session = new FixedSession(new UiaRawRead
+        {
+            Surrounding = "Deploying Kubernetes to staging ",
+            Preceding = " ",
+            RoundTrips = 6,
+        });
+        using var worker = new UiaWorker(() => session);
+        using var reader = new UiaContextReader(worker, new Blocklist(), Deadline(2_000));
+
+        var read = reader.BeginRead(Editor).Wait();
+
+        Assert.Equal(" ", read.Preceding);
+    }
+
+    [Fact]
+    public void TheCharacterBeforeTheCaretIsKeptEvenWhenNothingIsWorthAHint()
+    {
+        // An almost empty box has no proper nouns in it. It still has a caret with something
+        // before it, and spacing needs that whether or not the recogniser gets any terms.
+        var session = new FixedSession(new UiaRawRead { Surrounding = "ok", Preceding = "k", RoundTrips = 6 });
+        using var worker = new UiaWorker(() => session);
+        using var reader = new UiaContextReader(worker, new Blocklist(), Deadline(2_000));
+
+        var read = reader.BeginRead(Editor).Wait();
+
+        Assert.Equal("k", read.Preceding);
+    }
+
+    [Fact]
+    public void AReadThrownAwayForItsContentKeepsNothingAtAll()
+    {
+        // Discarding a read means all of it. One character is harmless, and "all of it, except"
+        // is how a privacy rule stops being one.
+        var session = new FixedSession(new UiaRawRead
+        {
+            Surrounding = "https://secure.chase.com/web/auth/dashboard",
+            Preceding = "d",
+            RoundTrips = 6,
+        });
+        using var worker = new UiaWorker(() => session);
+        using var reader = new UiaContextReader(worker, new Blocklist(), Deadline(2_000));
+
+        var read = reader.BeginRead(Editor).Wait();
+
+        Assert.Equal(ContextOutcome.BlockedContent, read.Outcome);
+        Assert.Null(read.Preceding);
+    }
+
+    /// <summary>A provider that answers at once with whatever it was given.</summary>
+    private sealed class FixedSession(UiaRawRead read) : IUiaSession
+    {
+        public bool IsAvailable => true;
+
+        public UiaRawRead Read(UiaReadRequest request) => read;
+
+        public void Dispose()
+        {
+        }
+    }
+
     /// <summary>A provider held open by the test, then let go.</summary>
     private sealed class BlockingSession(ManualResetEventSlim gate) : IUiaSession
     {

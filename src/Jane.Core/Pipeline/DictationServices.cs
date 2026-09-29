@@ -6,11 +6,16 @@ namespace Jane.Core.Pipeline;
 /// <param name="Selection">What was selected, if anything. Drives the mode.</param>
 /// <param name="Hotwords">Terms for sherpa-onnx contextual biasing and the LLM prompt.</param>
 /// <param name="ScreenContext">On-screen text, for spelling names correctly. Never answered.</param>
+/// <param name="PrecedingText">
+/// What the application reported immediately before the caret at key-down. Null means it would
+/// not say; empty means the caret is at the very start, which is an answer in its own right.
+/// </param>
 public sealed record DictationContext(
     SelectionResult Selection,
     IReadOnlyList<string> Hotwords,
     string? ScreenContext = null,
-    string? ControlType = null)
+    string? ControlType = null,
+    string? PrecedingText = null)
 {
     public static DictationContext Empty { get; } = new(SelectionResult.None, []);
 }

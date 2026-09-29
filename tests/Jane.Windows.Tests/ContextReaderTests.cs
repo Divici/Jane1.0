@@ -205,6 +205,39 @@ public sealed class ContextReaderTests : IDisposable
     }
 
     [Fact]
+    public void ReadsTheCharacterBeforeTheCaret()
+    {
+        using var harness = Win32TextHarness.Create(Fixture);
+        Assert.SkipWhen(harness is null, "No interactive desktop: the harness window could not take foreground.");
+
+        harness!.PlaceCaretAt(10);
+
+        using var reader = RealReader(out var worker);
+        var read = reader.BeginRead(harness.Target).Wait(TimeSpan.FromSeconds(5));
+        worker.Dispose();
+
+        // The one fact automatic spacing needs, asked of the application rather than remembered.
+        Assert.Equal(Fixture[9].ToString(), read.Preceding);
+    }
+
+    [Fact]
+    public void ACaretAtTheVeryStartReportsNothingBeforeIt()
+    {
+        using var harness = Win32TextHarness.Create(Fixture);
+        Assert.SkipWhen(harness is null, "No interactive desktop: the harness window could not take foreground.");
+
+        harness!.PlaceCaretAt(0);
+
+        using var reader = RealReader(out var worker);
+        var read = reader.BeginRead(harness.Target).Wait(TimeSpan.FromSeconds(5));
+        worker.Dispose();
+
+        // Empty, not null: "there is nothing before the caret" is an answer, and it is the one
+        // that stops a leading space being typed into an empty box.
+        Assert.Equal(string.Empty, read.Preceding);
+    }
+
+    [Fact]
     public void APasswordStyledControlIsNeverRead()
     {
         // ES_PASSWORD is what makes UI Automation report IsPassword, which is the only signal a

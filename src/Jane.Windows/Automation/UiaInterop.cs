@@ -313,6 +313,12 @@ public sealed unsafe partial class UiaComSession : IUiaSession
 
             if (Budget(clock, request))
             {
+                // Before the expansion below, which moves this range's endpoints for good.
+                read = read with { Preceding = PrecedingCharacter(range, ref roundTrips) };
+            }
+
+            if (Budget(clock, request))
+            {
                 // Expanding the range Jane already holds, rather than cloning it first, saves a
                 // round trip; the selection text has already been taken off it by this point.
                 if (Hr(Uia.RangeExpandToEnclosingUnit(range, Uia.TextUnitParagraph)))
@@ -382,6 +388,52 @@ public sealed unsafe partial class UiaComSession : IUiaSession
         finally
         {
             Release(textPattern2);
+        }
+    }
+
+    /// <summary>
+    /// The one character before a range, which is the fact automatic spacing turns on.
+    /// </summary>
+    /// <returns>
+    /// Null when the provider would not answer, empty when there is nothing before the range.
+    /// </returns>
+    /// <remarks>
+    /// Done on a clone, because the caller still needs the original where it is. Pulling the start
+    /// back by one and reading a single character works for a caret and a selection alike: either
+    /// way the first character of the widened range is the one that was just outside it.
+    /// </remarks>
+    private static string? PrecedingCharacter(nint range, ref int roundTrips)
+    {
+        nint clone;
+        roundTrips++;
+        if (!Hr(Uia.RangeClone(range, &clone)) || clone == 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            int moved;
+            roundTrips++;
+            if (!Hr(Uia.RangeMoveEndpointByUnit(clone, Uia.EndpointStart, Uia.TextUnitCharacter, -1, &moved)))
+            {
+                return null;
+            }
+
+            if (moved == 0)
+            {
+                // Nowhere to go: the range already begins at the start of the document.
+                return string.Empty;
+            }
+
+            // A provider that moved and then returned nothing has contradicted itself, and a
+            // contradiction is not an answer.
+            var text = RangeText(clone, 1, ref roundTrips);
+            return string.IsNullOrEmpty(text) ? null : text;
+        }
+        finally
+        {
+            Release(clone);
         }
     }
 
@@ -629,7 +681,11 @@ public sealed unsafe partial class UiaComSession : IUiaSession
 
         internal const int TreeScopeElement = 1;
         internal const int AutomationElementModeFull = 1;
+        internal const int TextUnitCharacter = 0;
         internal const int TextUnitParagraph = 4;
+
+        /// <summary>TextPatternRangeEndpoint_Start.</summary>
+        internal const int EndpointStart = 0;
 
         /// <summary>Everything fetched in the single cache-filling round trip.</summary>
         internal static ReadOnlySpan<int> CachedProperties =>
@@ -713,6 +769,11 @@ public sealed unsafe partial class UiaComSession : IUiaSession
 
         internal static int RangeArrayGetElement(nint self, int index, nint* range) =>
             ((delegate* unmanaged<nint, int, nint*, int>)Slot(self, 4))(self, index, range);
+
+        internal static int RangeClone(nint self, nint* clone) => GetPtr(self, 3, clone);
+
+        internal static int RangeMoveEndpointByUnit(nint self, int endpoint, int unit, int count, int* moved) =>
+            ((delegate* unmanaged<nint, int, int, int, int*, int>)Slot(self, 14))(self, endpoint, unit, count, moved);
 
         internal static int RangeExpandToEnclosingUnit(nint self, int unit) =>
             ((delegate* unmanaged<nint, int, int>)Slot(self, 6))(self, unit);

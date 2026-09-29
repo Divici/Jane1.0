@@ -70,6 +70,137 @@ public sealed class HotkeyTests
     }
 
     [Fact]
+    public void AKeyTheUserPressedCountsAsActivity()
+    {
+        // Spacing falls back to what Jane last typed, which stops being true the moment the user
+        // types anything themselves.
+        using var hook = new LowLevelKeyboardHook();
+        var before = hook.Version;
+
+        hook.RecordHookEvent(LetterK, isKeyDown: true, At(0));
+
+        Assert.NotEqual(before, hook.Version);
+    }
+
+    [Fact]
+    public void TheDictationKeyItselfIsNotActivity()
+    {
+        // Every dictation begins with this key. Counting it would discard the memory every single
+        // time and bring back "Hello there.How are you?".
+        using var hook = new LowLevelKeyboardHook();
+        var before = hook.Version;
+
+        hook.RecordHookEvent(RightCtrl, isKeyDown: true, At(0));
+        hook.RecordHookEvent(RightCtrl, isKeyDown: true, At(30));
+        hook.RecordHookEvent(RightCtrl, isKeyDown: false, At(900));
+
+        Assert.Equal(before, hook.Version);
+    }
+
+    [Fact]
+    public void AModifierTheBindingRequiresIsNotActivityEither()
+    {
+        using var hook = new LowLevelKeyboardHook(new HotkeyBinding(LetterK, [LeftShift]));
+        var before = hook.Version;
+
+        hook.RecordHookEvent(LeftShift, isKeyDown: true, At(0));
+        hook.RecordHookEvent(LetterK, isKeyDown: true, At(10));
+
+        Assert.Equal(before, hook.Version);
+    }
+
+    [Fact]
+    public void JanesOwnKeystrokesAreNotActivity()
+    {
+        // Injection is thousands of synthetic key events. They arrive at the hook like any other,
+        // flagged as injected, and they are the one input Jane already knows about.
+        using var hook = new LowLevelKeyboardHook();
+        var before = hook.Version;
+
+        hook.RecordHookEvent(LetterK, isKeyDown: true, At(0), injected: true);
+
+        Assert.Equal(before, hook.Version);
+    }
+
+    [Fact]
+    public void ReleasingAKeyIsNotASecondPieceOfActivity()
+    {
+        using var hook = new LowLevelKeyboardHook();
+
+        hook.RecordHookEvent(LetterK, isKeyDown: true, At(0));
+        var afterDown = hook.Version;
+        hook.RecordHookEvent(LetterK, isKeyDown: false, At(40));
+
+        Assert.Equal(afterDown, hook.Version);
+    }
+
+    [Theory]
+    [InlineData(0x0201)] // WM_LBUTTONDOWN
+    [InlineData(0x0204)] // WM_RBUTTONDOWN
+    [InlineData(0x0207)] // WM_MBUTTONDOWN
+    [InlineData(0x020B)] // WM_XBUTTONDOWN
+    public void AMouseButtonCountsAsActivity(int message)
+    {
+        // A click is how a caret gets moved without a single key being pressed.
+        using var hook = new LowLevelKeyboardHook();
+        var before = hook.Version;
+
+        hook.RecordMouseEvent(message, injected: false);
+
+        Assert.NotEqual(before, hook.Version);
+    }
+
+    [Theory]
+    [InlineData(0x0200)] // WM_MOUSEMOVE
+    [InlineData(0x0202)] // WM_LBUTTONUP
+    [InlineData(0x020A)] // WM_MOUSEWHEEL
+    public void MovingOrScrollingTheMouseIsNotActivity(int message)
+    {
+        // Neither moves a caret, and a pointer that is merely resting on the desk twitches often
+        // enough that counting movement would make the memory useless.
+        using var hook = new LowLevelKeyboardHook();
+        var before = hook.Version;
+
+        hook.RecordMouseEvent(message, injected: false);
+
+        Assert.Equal(before, hook.Version);
+    }
+
+    [Fact]
+    public void ASyntheticClickIsNotActivity()
+    {
+        using var hook = new LowLevelKeyboardHook();
+        var before = hook.Version;
+
+        hook.RecordMouseEvent(0x0201, injected: true);
+
+        Assert.Equal(before, hook.Version);
+    }
+
+    [Fact]
+    public void RecordingActivityAllocatesNothing()
+    {
+        // The same rule as the keyboard callback, for the same reason: a hook that allocates can
+        // stall on a collection, and Windows removes a hook that stalls.
+        using var hook = new LowLevelKeyboardHook();
+
+        for (var i = 0; i < 2_000; i++)
+        {
+            hook.RecordMouseEvent(0x0201, injected: false);
+            hook.RecordHookEvent(LetterK, i % 2 == 0, At(i));
+        }
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 10_000; i++)
+        {
+            hook.RecordMouseEvent(0x0201, injected: false);
+            hook.RecordHookEvent(LetterK, i % 2 == 0, At(i));
+        }
+
+        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+    }
+
+    [Fact]
     public void EscapeIsSwallowedOnlyWhileAPipelineIsInFlight()
     {
         // Esc is the single key Jane ever takes from the app underneath, and only while there is

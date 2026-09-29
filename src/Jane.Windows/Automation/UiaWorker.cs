@@ -76,6 +76,12 @@ public sealed record UiaRawRead
 
     public string? Surrounding { get; init; }
 
+    /// <summary>
+    /// The single character before the caret. Null when the provider would not say, empty when
+    /// the caret is at the very start.
+    /// </summary>
+    public string? Preceding { get; init; }
+
     public CaretRect? Caret { get; init; }
 
     public int RoundTrips { get; init; }

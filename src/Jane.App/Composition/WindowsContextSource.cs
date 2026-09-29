@@ -48,7 +48,8 @@ public sealed class WindowsContextSource(UiaContextReader reader, SelectionProbe
 
             // The window class stands in for the control type: ContextRead does not surface the
             // UIA control-type id, and ModeSelector's address-bar rule already matches on class.
-            read.Target.WindowClass);
+            read.Target.WindowClass,
+            read.Preceding);
     }
 }
 

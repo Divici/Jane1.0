@@ -445,6 +445,17 @@ public sealed class JaneHost : IAsyncDisposable
         var uia = UiaContextReader.CreateDefault();
         var contextSource = new WindowsContextSource(uia, new SelectionProbe(clipboard, sendInput));
 
+        // Built before the orchestrator because it is also what notices the user typing or
+        // clicking, which is when automatic spacing has to stop trusting its own memory.
+        var hotkeys = new LowLevelKeyboardHook(
+            current.Hotkey.ToBinding(),
+            current.Hotkey.Mode,
+            new HotkeyOptions
+            {
+                MinimumHold = TimeSpan.FromMilliseconds(current.Hotkey.MinimumHoldMs),
+                MaxDuration = TimeSpan.FromMilliseconds(current.Hotkey.MaxToggleDurationMs),
+            });
+
         var orchestrator = new DictationOrchestrator(
             capture,
             recognizer,
@@ -458,16 +469,8 @@ public sealed class JaneHost : IAsyncDisposable
                 ? UnavailableRewriter.Instance
                 : new LlmSelectionRewriter(llm.CreateClient(), current.Llm.GpuModel, current.Llm.NumCtx),
             new SendInputSubmitter(sendInput),
-            log: log);
-
-        var hotkeys = new LowLevelKeyboardHook(
-            current.Hotkey.ToBinding(),
-            current.Hotkey.Mode,
-            new HotkeyOptions
-            {
-                MinimumHold = TimeSpan.FromMilliseconds(current.Hotkey.MinimumHoldMs),
-                MaxDuration = TimeSpan.FromMilliseconds(current.Hotkey.MaxToggleDurationMs),
-            });
+            log: log,
+            activity: hotkeys);
 
         var downloader = new ModelDownloader(new HttpClient(), paths.Models);
         var host = BuildHostProvisioning(current);

@@ -11,12 +11,11 @@ namespace Jane.Core.Text;
 /// predecessor, and fixing it meant reaching for the keyboard.
 /// </para>
 /// <para>
-/// The obvious fix -- look at the character before the caret -- is not available. UIA returns the
-/// enclosing paragraph with no caret offset inside it, getting one costs round trips inside an
-/// 80ms budget, and many of the applications people dictate into serve no UIA text at all. So this
-/// works from what Jane knows for certain instead: the text it last injected into this very
-/// window. That covers the case that actually goes wrong, and everywhere the memory does not
-/// apply the policy declines to guess rather than inventing a space.
+/// What counts as "before the caret" is the caller's to establish, and there are two sources. The
+/// application's own answer, read over UI Automation at key-down, is used whenever there is one.
+/// Many applications serve no text that way, so the fallback is the text Jane last injected into
+/// this very window -- trusted only until the user types or clicks, because after that the caret
+/// may be anywhere. With neither, the policy declines to guess rather than inventing a space.
 /// </para>
 /// <para>
 /// The asymmetry is deliberate. A missing space is silent and has to be repaired by hand; a

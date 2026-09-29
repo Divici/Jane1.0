@@ -26,6 +26,7 @@ internal sealed class Harness
 
         ContextSource = new FakeContextSource(this);
         Submitter = new RecordingSubmitter(Injector);
+        Activity = new FakeUserActivity();
 
         Orchestrator = new DictationOrchestrator(
             Source, Recognizer, Vad, Formatter, Injector, Focus,
@@ -33,7 +34,8 @@ internal sealed class Harness
             ContextSource,
             new FakeRewriter(this),
             Submitter,
-            log: log);
+            log: log,
+            activity: Activity);
 
         Orchestrator.StateChanged += (_, status) =>
         {
@@ -64,8 +66,10 @@ internal sealed class Harness
 
     public RecordingSubmitter Submitter { get; }
 
-    /// <summary>What Deep Context reports: selection and hotwords.</summary>
-    public DictationContext Context { get; init; } = DictationContext.Empty;
+    public FakeUserActivity Activity { get; }
+
+    /// <summary>What Deep Context reports: selection, hotwords and what sits before the caret.</summary>
+    public DictationContext Context { get; set; } = DictationContext.Empty;
 
     /// <summary>What a selection rewrite returns.</summary>
     public string Rewrite { get; init; } = "rewritten";
@@ -260,6 +264,14 @@ internal sealed class Harness
             CollectCount++;
             return Task.FromResult(harness.Context);
         }
+    }
+
+    internal sealed class FakeUserActivity : IUserActivityMonitor
+    {
+        public long Version { get; private set; }
+
+        /// <summary>The user typed or clicked: whatever Jane remembered about the caret is stale.</summary>
+        public void UserDidSomething() => Version++;
     }
 
     internal sealed class FakeRewriter(Harness harness) : ISelectionRewriter
