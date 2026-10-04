@@ -38,6 +38,12 @@ public partial class App : Application
     private WindowLauncher? _windows;
     private SingleInstance? _instance;
 
+    /// <summary>
+    /// What the overlay said when the dictation graph could not be built, kept so a menu item
+    /// that has no window to open can say it again.
+    /// </summary>
+    private string? _startupFailure;
+
     /// <summary>The tray's command surface.</summary>
     public ITrayCommands? Tray => _tray;
 
@@ -87,13 +93,32 @@ public partial class App : Application
 
     private async Task StartHostAsync()
     {
+        // Three steps, each allowed to fail on its own. They used to share one try block, so
+        // anything that went wrong while starting also cancelled onboarding -- the one window
+        // that could have fixed it.
         try
         {
             _host = JaneHost.Create(Dispatcher, _overlay!);
             _windows = new WindowLauncher(_host);
+        }
+        catch (Exception ex)
+        {
+            ReportStartupFailure(ex, "The dictation graph could not be composed.");
+            return;
+        }
 
+        try
+        {
             await _host.StartAsync(CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            // The windows exist, so settings, history and onboarding all still open.
+            ReportStartupFailure(ex, "The dictation graph did not start.");
+        }
 
+        try
+        {
             // First run: models are not downloaded and no hotkey has been chosen, so onboarding
             // runs before anything else. It is the only window Jane ever opens by itself.
             // A test-launched Jane must never open onboarding: it would steal the foreground and
@@ -113,20 +138,52 @@ public partial class App : Application
         }
         catch (Exception ex)
         {
-            // Startup failing must not take the process down: the tray icon stays, so the user can
-            // reach settings, see the message and download whatever is missing.
-            _overlay?.Show(new OverlayStatus(OverlayState.Error, DescribeStartupFailure(ex)));
-
-            // The overlay message is deliberately short and non-technical, and for a year it was
-            // the only thing Jane said about a failed start -- while itself pointing at a log that
-            // did not exist. The exception goes here, where it can be read afterwards.
-            StartupLog().Write(LogLevel.Error, "startup", "The dictation graph did not start.",
-                LogFields.New()
-                    .Add("exception", ex.GetType().FullName)
-                    .Add("detail", ex.Message)
-                    .Add("inner", ex.InnerException?.Message)
-                    .Add("stack", ex.StackTrace));
+            ReportStartupFailure(ex, "Onboarding could not be shown.");
         }
+    }
+
+    /// <summary>
+    /// Says that something failed while starting, on screen and in the log.
+    /// </summary>
+    /// <remarks>
+    /// Startup failing must not take the process down: the tray icon stays. The overlay message
+    /// is deliberately short and non-technical, and for a year it was the only thing Jane said
+    /// about a failed start -- while itself pointing at a log that did not exist. The exception
+    /// goes to the log, where it can be read afterwards.
+    /// </remarks>
+    private void ReportStartupFailure(Exception ex, string what)
+    {
+        _startupFailure = StartupFailure.Describe(ex);
+        _overlay?.Show(new OverlayStatus(OverlayState.Error, _startupFailure));
+
+        StartupLog().Write(LogLevel.Error, "startup", what,
+            LogFields.New()
+                .Add("exception", ex.GetType().FullName)
+                .Add("detail", ex.Message)
+                .Add("inner", ex.InnerException?.Message)
+                .Add("stack", ex.StackTrace));
+    }
+
+    /// <summary>
+    /// Opens a window, or says why it cannot be opened.
+    /// </summary>
+    /// <remarks>
+    /// "I would click on it and nothing would happen" is the report this exists for. The windows
+    /// are reached through the dictation graph, and when the graph is missing a menu item used to
+    /// do nothing at all -- no window, no message, no log line. Whatever the reason, a click now
+    /// produces something.
+    /// </remarks>
+    private void ShowWindow(Action<WindowLauncher> show, string name)
+    {
+        if (_windows is { } windows)
+        {
+            show(windows);
+            return;
+        }
+
+        _overlay?.Show(new OverlayStatus(OverlayState.Error, StartupFailure.WindowUnavailable(_startupFailure)));
+        StartupLog().Write(LogLevel.Warning, "tray", "A window was asked for before Jane had one to show.",
+            LogFields.New().Add("window", name).Add("startupFailure", _startupFailure));
     }
 
     /// <summary>
@@ -166,13 +223,6 @@ public partial class App : Application
         }
     }
 
-    private static string DescribeStartupFailure(Exception ex) => ex switch
-    {
-        Speech.VadModelMissingException => "Voice detection model missing. Open Jane's settings to download it.",
-        Speech.SpeechModelMissingException => "Speech model missing. Open Jane's settings to download it.",
-        _ => "Jane could not start its dictation pipeline. See the log for details.",
-    };
-
     protected override void OnExit(ExitEventArgs e)
     {
         // Host first: it owns the keyboard hook and the supervised child processes, and both
@@ -201,7 +251,7 @@ public partial class App : Application
     /// settings window is the thing they were looking for.
     /// </remarks>
     private void OnSecondInstanceAttempted(object? sender, EventArgs e) =>
-        Dispatcher.BeginInvoke(() => _windows?.ShowSettings());
+        Dispatcher.BeginInvoke(() => ShowWindow(w => w.ShowSettings(), "settings"));
 
     private void OnTrayCommand(object? sender, TrayCommandEventArgs e)
     {
@@ -224,11 +274,11 @@ public partial class App : Application
                 break;
 
             case TrayCommand.Settings:
-                _windows?.ShowSettings();
+                ShowWindow(w => w.ShowSettings(), "settings");
                 break;
 
             case TrayCommand.History:
-                _windows?.ShowHistory();
+                ShowWindow(w => w.ShowHistory(), "history");
                 break;
 
             case TrayCommand.OpenLogs:

@@ -211,6 +211,33 @@ public sealed partial class InstallerTests
     }
 
     [Fact]
+    public void TheReleaseStartsJaneOnAMachineWithNoModelsBeforePublishingIt()
+    {
+        // The check the first release did not have. It installed and uninstalled the files and
+        // never ran the program -- and the program could not open its own settings window on a
+        // machine with nothing downloaded, which is every machine it is installed on.
+        var workflow = Workflow;
+
+        var started = workflow.IndexOf("$env:JANE_HOME", StringComparison.Ordinal);
+        var publish = workflow.IndexOf("gh release", StringComparison.Ordinal);
+
+        Assert.True(started >= 0, "The workflow never starts Jane with an empty home.");
+        Assert.True(started < publish, "Jane is published before it has been started.");
+
+        // Composed, reached onboarding, stayed up, and logged nothing as an error.
+        Assert.Contains("Dictation graph composed", workflow, StringComparison.Ordinal);
+        Assert.Contains("Onboarding decision", workflow, StringComparison.Ordinal);
+        Assert.Contains("$jane.HasExited", workflow, StringComparison.Ordinal);
+        Assert.Contains("' ERR '", workflow, StringComparison.Ordinal);
+
+        // The strings above are matched against Jane's log, so they have to be what Jane writes.
+        var host = Read("src", "Jane.App", "Composition", "JaneHost.cs");
+        var app = Read("src", "Jane.App", "App.xaml.cs");
+        Assert.Contains("\"Dictation graph composed.\"", host, StringComparison.Ordinal);
+        Assert.Contains("\"Onboarding decision.\"", app, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void EveryActionIsPinnedToACommit()
     {
         // A tag can be moved to point at different code; a commit hash cannot. This job holds a

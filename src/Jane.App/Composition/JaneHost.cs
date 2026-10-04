@@ -37,10 +37,19 @@ public sealed class JaneHost : IAsyncDisposable
     private readonly Dispatcher _dispatcher;
     private readonly WasapiCapture _capture;
     private readonly ISpeechRecognizer _recognizer;
-    private readonly SileroVadGate _vad;
+    private readonly SileroVoiceActivityGate _vad;
     private readonly LowLevelKeyboardHook _hotkeys;
     private readonly IOverlayPresenter _overlay;
-    private readonly LlmStack? _llm;
+    private readonly SwitchableFormatter _formatter;
+    private readonly SwitchableRewriter _rewriter;
+    private readonly SemaphoreSlim _llmGate = new(1, 1);
+
+    /// <summary>
+    /// The language-model server. Null until there is a runtime to run it with, which on a
+    /// freshly installed machine is not until part-way through first run.
+    /// </summary>
+    private LlmStack? _llm;
+    private bool _started;
     private readonly JaneDatabase _database;
     private readonly UiaContextReader _context;
     private readonly IFocusTracker _focus;
@@ -71,11 +80,13 @@ public sealed class JaneHost : IAsyncDisposable
         Dispatcher dispatcher,
         WasapiCapture capture,
         ISpeechRecognizer recognizer,
-        SileroVadGate vad,
+        SileroVoiceActivityGate vad,
         LowLevelKeyboardHook hotkeys,
         DictationOrchestrator orchestrator,
         IOverlayPresenter overlay,
         LlmStack? llm,
+        SwitchableFormatter formatter,
+        SwitchableRewriter rewriter,
         JaneDatabase database,
         UserDictionary dictionary,
         CustomInstructions instructions,
@@ -84,7 +95,7 @@ public sealed class JaneHost : IAsyncDisposable
         IFocusTracker focus,
         ITextInjector injector,
         SettingsRepository settingsRepository,
-        IModelProvisioner provisioner,
+        IModelProvisioner weights,
         FileLog log)
     {
         Log = log;
@@ -92,7 +103,13 @@ public sealed class JaneHost : IAsyncDisposable
         _focus = focus;
         _injector = injector;
         Settings2 = settingsRepository;
-        Provisioner = provisioner;
+        _formatter = formatter;
+        _rewriter = rewriter;
+
+        // One provisioner for the life of the process, whatever the machine had at launch. The
+        // settings window and the wizard both hold it, and both need "is there a language-model
+        // server" answered now rather than as it was when Jane started.
+        Provisioner = new LateBoundProvisioner(weights, EnsureLanguageModelsAsync, OnWeightsInstalled);
         _llm = llm;
         _database = database;
         Dictionary = dictionary;
@@ -334,9 +351,13 @@ public sealed class JaneHost : IAsyncDisposable
         return stored with { Speech = bench.Speech, BenchmarkedAt = measured };
     }
 
-    public static JaneHost Create(Dispatcher dispatcher, IOverlayPresenter overlay)
+    /// <param name="paths">
+    /// Where Jane keeps its data. Defaults to the user profile; a test passes a directory with
+    /// nothing in it, which is what a new machine looks like.
+    /// </param>
+    public static JaneHost Create(Dispatcher dispatcher, IOverlayPresenter overlay, JanePaths? paths = null)
     {
-        var paths = new JanePaths();
+        paths ??= new JanePaths();
 
         // First, before anything that can fail. Composition itself is a source of field bugs --
         // a missing model, an unreachable Ollama -- and a log that only starts once the graph is
@@ -369,7 +390,12 @@ public sealed class JaneHost : IAsyncDisposable
         // in another process is picked up on the next read; see SettingsStore.StartWatching.
         var recognizer = BuildRecognizer(paths, current.Speech);
 
-        var vad = new SileroVadGate(ModelCatalog.SileroVad.ResolvePath(paths.Models));
+        // Built on first use, not here. On a machine Jane has just been installed on the model
+        // is not downloaded yet, and constructing the gate eagerly threw -- which took the whole
+        // graph with it, and with the graph the settings window and the wizard that would have
+        // downloaded it.
+        var vadModel = ModelCatalog.SileroVad.ResolvePath(paths.Models);
+        var vad = new SileroVoiceActivityGate(() => new SileroVadGate(vadModel));
 
         var capture = WasapiCapture.ForDefaultDevice(new AudioCaptureOptions()
             .With(current.Routing) with
@@ -417,31 +443,11 @@ public sealed class JaneHost : IAsyncDisposable
         var instructions = new CustomInstructions(database);
         var history = new HistoryStore(database);
 
-        // The formatter never learns what a GPU is. RoutedFormatter applies the governor's
-        // decision, so "skip the LLM while gaming" is one place rather than a branch in every
-        // formatter -- and the skipped dictations are still recorded, because Phase 12's
-        // false-bypass rate is unmeasurable without them.
-        ITranscriptFormatter formatter;
-        if (llm is null)
-        {
-            formatter = new PassthroughFormatter();
-        }
-        else
-        {
-            var skipped = new SkippedDictationLog(history, focus.GetForegroundWindow);
-            var inner = new TranscriptFormatter(
-                llm.CreateClient(),
-                new TranscriptFormatterOptions
-                {
-                    Model = current.Llm.GpuModel,
-                    NumCtx = current.Llm.NumCtx,
-                    KeepAlive = current.Llm.KeepAlive,
-                },
-                new StoredFormattingPolicySource(dictionary, instructions),
-                new HistoryFormattingLog(history, focus.GetForegroundWindow));
-
-            formatter = new RoutedFormatter(inner, () => llm.CurrentRoute, skipped.Record);
-        }
+        // Transcript cleanup and Edit Mode's rewrite, as placeholders the orchestrator can hold.
+        // Both are bound later, by BindLanguageModels: at the end of this method when there is a
+        // language-model server already, and after the runtime is installed when there is not.
+        var formatter = new SwitchableFormatter();
+        var rewriter = new SwitchableRewriter();
 
         // Deep Context: one long-lived UIA worker, an 80 ms deadline, and the layered selection
         // probe that makes Edit Mode safe in Chromium.
@@ -462,7 +468,7 @@ public sealed class JaneHost : IAsyncDisposable
         var orchestrator = new DictationOrchestrator(
             capture,
             recognizer,
-            new SileroVoiceActivityGate(vad),
+            vad,
             formatter,
             injector,
             focus,
@@ -472,29 +478,15 @@ public sealed class JaneHost : IAsyncDisposable
                 SpokenForms = current.Text.ToSpokenFormOptions(),
             },
             contextSource,
-            llm is null
-                ? UnavailableRewriter.Instance
-                : new LlmSelectionRewriter(llm.CreateClient(), current.Llm.GpuModel, current.Llm.NumCtx),
+            rewriter,
             new SendInputSubmitter(sendInput),
             log: log,
             activity: hotkeys);
 
+        // Speech models and the runtime itself. The language models are reached through the host,
+        // which knows whether there is a server to ask -- see LateBoundProvisioner.
         var downloader = new ModelDownloader(new HttpClient(), paths.Models);
-        var host = BuildHostProvisioning(current);
-
-        // Onboarding must not leave a manual `ollama pull` as homework, so the provisioner drives
-        // Jane's own supervised server rather than shelling out to the CLI.
-        IModelProvisioner provisioner = llm is null
-            ? new WeightsOnlyProvisioner(downloader, host)
-            : new ModelProvisioner(
-                downloader,
-                (model, progress, token) => llm.Puller.PullAsync(
-                    model,
-                    progress is null ? null : new Progress<PullProgress>(p =>
-                        progress.Report(new LlmPullProgress(model, p.Completed, p.Total, p.Status))),
-                    token),
-                (model, token) => llm.Puller.IsPresentAsync(model, token),
-                host);
+        var weights = new WeightsOnlyProvisioner(downloader, BuildHostProvisioning(current));
 
         log.Write(LogLevel.Info, "startup", "Dictation graph composed.", LogFields.New()
             .Add("engine", current.Speech.EngineId)
@@ -503,10 +495,148 @@ public sealed class JaneHost : IAsyncDisposable
             .Add("mic", current.Microphone.Activation)
             .Add("onboarded", current.OnboardingComplete));
 
-        return new JaneHost(
+        var host = new JaneHost(
             dispatcher, capture, recognizer, vad, hotkeys, orchestrator, overlay, llm,
+            formatter, rewriter,
             database, dictionary, instructions, history, uia, focus, injector,
-            settingsRepository, provisioner, log);
+            settingsRepository, weights, log);
+
+        if (llm is not null)
+        {
+            host.BindLanguageModels(llm, current);
+        }
+
+        return host;
+    }
+
+    /// <summary>
+    /// Points transcript cleanup and Edit Mode at a language-model server.
+    /// </summary>
+    /// <remarks>
+    /// The formatter never learns what a GPU is. <see cref="RoutedFormatter"/> applies the
+    /// governor's decision, so "skip the LLM while gaming" is one place rather than a branch in
+    /// every formatter -- and the skipped dictations are still recorded, because the false-bypass
+    /// rate is unmeasurable without them.
+    /// </remarks>
+    private void BindLanguageModels(LlmStack llm, JaneSettings current)
+    {
+        var skipped = new SkippedDictationLog(History, _focus.GetForegroundWindow);
+        var inner = new TranscriptFormatter(
+            llm.CreateClient(),
+            new TranscriptFormatterOptions
+            {
+                Model = current.Llm.GpuModel,
+                NumCtx = current.Llm.NumCtx,
+                KeepAlive = current.Llm.KeepAlive,
+            },
+            new StoredFormattingPolicySource(Dictionary, Instructions),
+            new HistoryFormattingLog(History, _focus.GetForegroundWindow));
+
+        _formatter.Bind(new RoutedFormatter(inner, () => llm.CurrentRoute, skipped.Record));
+        _rewriter.Bind(new LlmSelectionRewriter(llm.CreateClient(), current.Llm.GpuModel, current.Llm.NumCtx));
+    }
+
+    /// <summary>
+    /// The language-model server, brought up now if it was not there at launch.
+    /// </summary>
+    /// <returns>Null when cleanup is switched off or the machine has no runtime to run it with.</returns>
+    /// <remarks>
+    /// <para>
+    /// A machine Jane has just been installed on has no runtime, so <see cref="Create"/> builds no
+    /// server. The wizard then installs one -- and this is what turns that into a working language
+    /// model without Jane being quit and started again. It is asked on every provisioning call and
+    /// is cheap once the server exists.
+    /// </para>
+    /// <para>
+    /// Serialised: the wizard asks about two models at once, and two servers on one port is a bug
+    /// that would look like the second model failing to download.
+    /// </para>
+    /// </remarks>
+    private async Task<LanguageModelAccess?> EnsureLanguageModelsAsync(CancellationToken cancellationToken)
+    {
+        await _llmGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (_disposed)
+            {
+                return null;
+            }
+
+            if (_llm is null)
+            {
+                var current = Settings2.Current;
+                if (!current.Llm.Enabled)
+                {
+                    return null;
+                }
+
+                var runtime = OllamaLocator.Locate(OllamaSearchOptions.ForMachine(AppContext.BaseDirectory));
+                if (!runtime.Found && !current.Llm.UseSystemOllama)
+                {
+                    return null;
+                }
+
+                var llm = LlmStack.Create(
+                    runtime.Runtime?.ExePath ?? Path.Combine(OllamaLocator.UserRuntimeDirectory, OllamaLocator.ExeName),
+                    current);
+
+                // Only a host that has been started owns a running server. Before that, StartAsync
+                // will start whatever is here when it gets to it.
+                if (_started)
+                {
+                    await llm.StartAsync(cancellationToken);
+                }
+
+                BindLanguageModels(llm, current);
+                _llm = llm;
+
+                Log.Write(LogLevel.Info, "llm", "Language-model server brought up after launch.", LogFields.New()
+                    .Add("source", runtime.Runtime?.Source)
+                    .Add("model", current.Llm.GpuModel));
+            }
+
+            var stack = _llm;
+            return new LanguageModelAccess(
+                (model, progress, token) => stack.Puller.PullAsync(
+                    model,
+                    progress is null ? null : new Progress<PullProgress>(p =>
+                        progress.Report(new LlmPullProgress(model, p.Completed, p.Total, p.Status))),
+                    token),
+                (model, token) => stack.Puller.IsPresentAsync(model, token));
+        }
+        finally
+        {
+            _llmGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// A speech model has finished downloading: start loading the engine.
+    /// </summary>
+    /// <remarks>
+    /// The next key press would do this anyway. Doing it here means the second or so a cold load
+    /// takes is spent while the user is reading the wizard's next page, not after they have
+    /// started talking. On the thread pool, because the caller is a download completing on the UI
+    /// thread and a model load is not something to do there.
+    /// </remarks>
+    private void OnWeightsInstalled()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Orchestrator.StartAsync(CancellationToken.None);
+            }
+            catch (ObjectDisposedException)
+            {
+                // Jane was quit while the download was finishing.
+            }
+        });
     }
 
     /// <summary>
@@ -610,11 +740,21 @@ public sealed class JaneHost : IAsyncDisposable
         // the resting pill on screen for the first time.
         _live.Attach(Settings2);
 
-        if (_llm is not null)
+        await _llmGate.WaitAsync(cancellationToken);
+        try
         {
-            // Started before the hook, so the first dictation never races the server coming up.
-            // A failure marks the GPU route degraded and Jane falls through to raw output.
-            await _llm.StartAsync(cancellationToken);
+            if (_llm is not null)
+            {
+                // Started before the hook, so the first dictation never races the server coming
+                // up. A failure marks the GPU route degraded and Jane falls through to raw output.
+                await _llm.StartAsync(cancellationToken);
+            }
+
+            _started = true;
+        }
+        finally
+        {
+            _llmGate.Release();
         }
 
         await Orchestrator.StartAsync(cancellationToken);
@@ -728,20 +868,30 @@ public sealed class JaneHost : IAsyncDisposable
         _context.Dispose();
         _vad.Dispose();
         _database.Dispose();
-
     }
 }
 
 /// <summary>Adapts <see cref="SileroVadGate"/> to the orchestrator's Win32-free contract.</summary>
 /// <remarks>
 /// The adapter exists so <c>Jane.Core</c> never references sherpa-onnx: the orchestrator is
-/// testable with a fake gate, and a missing VAD model still surfaces as the typed
-/// <see cref="VadModelMissingException"/> from the real one rather than being quietly skipped.
+/// testable with a fake gate.
+/// <para>
+/// The gate is built the first time it is needed, from <paramref name="factory"/>. Building it at
+/// composition meant a machine without the model could not compose at all. A model that is
+/// missing is reported as <see cref="SpeechEngineUnavailableException"/>, which the pipeline shows
+/// as "not downloaded yet", and is looked for again on the next dictation: the failure is never
+/// remembered, because the download finishing in between is the case this exists for.
+/// </para>
 /// </remarks>
-public sealed class SileroVoiceActivityGate(SileroVadGate gate) : IVoiceActivityGate
+public sealed class SileroVoiceActivityGate(Func<SileroVadGate> factory) : IVoiceActivityGate, IDisposable
 {
+    private readonly Lock _gate = new();
+    private SileroVadGate? _inner;
+    private bool _disposed;
+
     public VoiceActivityResult Process(ReadOnlyMemory<float> samples)
     {
+        var gate = Resolve();
         var result = gate.Process(samples);
 
         // Rebased onto the trimmed buffer. The gate reports offsets in the original buffer's
@@ -758,5 +908,38 @@ public sealed class SileroVoiceActivityGate(SileroVadGate gate) : IVoiceActivity
         }
 
         return new VoiceActivityResult(result.ContainsSpeech, result.Samples, segments);
+    }
+
+    private SileroVadGate Resolve()
+    {
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+
+            if (_inner is not null)
+            {
+                return _inner;
+            }
+
+            try
+            {
+                return _inner = factory();
+            }
+            catch (VadModelMissingException ex)
+            {
+                throw new SpeechEngineUnavailableException(
+                    "The voice detection model is not downloaded yet. Open Jane's settings to download it.", ex);
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        lock (_gate)
+        {
+            _disposed = true;
+            _inner?.Dispose();
+            _inner = null;
+        }
     }
 }

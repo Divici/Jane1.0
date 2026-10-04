@@ -82,7 +82,26 @@ public sealed class DictationOrchestrator : IAsyncDisposable
     private readonly IJaneLog _log;
 
     private readonly SemaphoreSlim _pipelineGate = new(1, 1);
-    private readonly TaskCompletionSource _engineReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    /// <summary>
+    /// Guards the three fields below, which together say whether the engine is up, coming up, or
+    /// failed to come up.
+    /// </summary>
+    private readonly Lock _engineGate = new();
+
+    /// <summary>
+    /// Completes when the engine is loaded, faults when a load failed. Replaced on every retry:
+    /// a failure is the state of one attempt, not of the process.
+    /// </summary>
+    private TaskCompletionSource _engineReady = NewEngineSignal();
+
+    /// <summary>The load in flight, so a second caller joins it rather than starting another.</summary>
+    private Task? _engineStart;
+
+    /// <summary>
+    /// The microphone is opened once. A retry is for a model that was missing, and opening a
+    /// device that is already open is how the "already initialized" bug was made.
+    /// </summary>
+    private bool _audioOpened;
 
     private PipelineStatus _status = PipelineStatus.Idle;
     private TargetWindow _target = TargetWindow.None;
@@ -214,27 +233,92 @@ public sealed class DictationOrchestrator : IAsyncDisposable
     /// This is where the plan's latency budget is actually earned. Cold ASR session-init measured
     /// 1.4 s and device open ~60 ms; paying either on key-down would put them on the path the user
     /// feels most. Both are paid here instead, while the tray icon is appearing.
+    /// <para>
+    /// Safe to call again. An engine that is up is left alone, a load in flight is joined, and a
+    /// load that failed is tried afresh -- which is what makes a model downloaded after launch
+    /// usable without restarting Jane.
+    /// </para>
     /// </remarks>
-    public async Task StartAsync(CancellationToken cancellationToken)
+    public Task StartAsync(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        if (_engineReady.Task.IsCompleted)
+        lock (_engineGate)
         {
-            return;
+            if (_engineReady.Task.IsCompletedSuccessfully)
+            {
+                return Task.CompletedTask;
+            }
+
+            if (_engineStart is { IsCompleted: false })
+            {
+                return _engineStart;
+            }
+
+            _engineStart = LoadEngineAsync(RenewEngineSignal(), cancellationToken);
+            return _engineStart;
+        }
+    }
+
+    /// <summary>
+    /// Starts another load if the last one failed. Returns at once.
+    /// </summary>
+    /// <remarks>
+    /// Called on every key-down, from the hook's pump thread, which must never be blocked. So
+    /// the fresh signal is installed here, synchronously -- the dictation this key press begins
+    /// has to wait on the new attempt, not read the old failure -- and the load itself, which is
+    /// over a second of work for a real model, goes to the thread pool.
+    /// </remarks>
+    private void RetryEngineIfItFailed()
+    {
+        lock (_engineGate)
+        {
+            if (!_engineReady.Task.IsFaulted || _engineStart is { IsCompleted: false })
+            {
+                return;
+            }
+
+            var signal = RenewEngineSignal();
+            _engineStart = Task.Run(() => LoadEngineAsync(signal, CancellationToken.None));
+        }
+    }
+
+    /// <summary>Must be called with <see cref="_engineGate"/> held.</summary>
+    private TaskCompletionSource RenewEngineSignal()
+    {
+        if (_engineReady.Task.IsFaulted)
+        {
+            // Observed, so a failure nobody happened to press a key during is not reported later
+            // as an unobserved task exception.
+            _ = _engineReady.Task.Exception;
+            _engineReady = NewEngineSignal();
         }
 
+        return _engineReady;
+    }
+
+    private static TaskCompletionSource NewEngineSignal() =>
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private async Task LoadEngineAsync(TaskCompletionSource signal, CancellationToken cancellationToken)
+    {
         try
         {
-            await _audio.OpenAsync(cancellationToken);
+            if (!_audioOpened)
+            {
+                await _audio.OpenAsync(cancellationToken);
+                _audioOpened = true;
+            }
+
             await _recognizer.LoadAsync(cancellationToken);
-            _engineReady.TrySetResult();
+            signal.TrySetResult();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // A failed load is not fatal to the process: the tray icon still works, settings still
-            // opens, and the user can download the model from there. Every later press reports it.
-            _engineReady.TrySetException(new SpeechEngineUnavailableException(
+            // opens, and the user can download the model from there. Every press until then
+            // reports it, and every press tries again.
+            signal.TrySetException(new SpeechEngineUnavailableException(
                 "The speech engine could not be loaded.", ex));
         }
     }
@@ -290,6 +374,9 @@ public sealed class DictationOrchestrator : IAsyncDisposable
         try
         {
             _cancellation = new CancellationTokenSource();
+
+            // The model may have been downloaded since the load that failed.
+            RetryEngineIfItFailed();
 
             // Captured at key-down, and re-verified immediately before injection. Reading it at
             // injection time instead would send the text wherever focus happened to land while
@@ -362,7 +449,20 @@ public sealed class DictationOrchestrator : IAsyncDisposable
         {
             Transition(new PipelineStatus(PipelineState.Listening));
 
-            var voice = _vad.Process(audio.Samples);
+            VoiceActivityResult voice;
+            try
+            {
+                voice = _vad.Process(audio.Samples);
+            }
+            catch (SpeechEngineUnavailableException ex)
+            {
+                // Voice detection is a downloaded model too, and it is built on first use. Its
+                // being absent is the same situation as the recogniser being absent, said the
+                // same way.
+                Fail(PipelineFailure.EngineUnavailable, ex.Message);
+                return;
+            }
+
             if (!voice.ContainsSpeech)
             {
                 Fail(PipelineFailure.NoSpeech, PipelineStatus.DefaultMessageFor(PipelineFailure.NoSpeech));
@@ -528,6 +628,18 @@ public sealed class DictationOrchestrator : IAsyncDisposable
         {
             Transition(new PipelineStatus(PipelineState.Cancelled));
         }
+        catch (Exception ex)
+        {
+            // Nothing above is expected to reach here, which is exactly why this is here. An
+            // exception that left this method used to leave the pill on "Listening" for good:
+            // the state was never moved on, and the task it faulted was never looked at.
+            _log.Write(LogLevel.Error, "pipeline", "A dictation failed unexpectedly.", LogFields.New()
+                .Add("exception", ex.GetType().FullName)
+                .Add("detail", ex.Message)
+                .Add("stack", ex.StackTrace));
+
+            Fail(PipelineFailure.Unexpected, PipelineStatus.DefaultMessageFor(PipelineFailure.Unexpected));
+        }
         finally
         {
             LogDictation(target, audio, recognitionTime, injection, Stopwatch.GetElapsedTime(startedAt));
@@ -665,14 +777,20 @@ public sealed class DictationOrchestrator : IAsyncDisposable
 
     private async Task<bool> WaitForEngineAsync(CancellationToken cancellationToken)
     {
-        if (_engineReady.Task.IsCompletedSuccessfully)
+        Task ready;
+        lock (_engineGate)
+        {
+            ready = _engineReady.Task;
+        }
+
+        if (ready.IsCompletedSuccessfully)
         {
             return true;
         }
 
         try
         {
-            await _engineReady.Task.WaitAsync(_options.EngineReadyTimeout, cancellationToken);
+            await ready.WaitAsync(_options.EngineReadyTimeout, cancellationToken);
             return true;
         }
         catch (TimeoutException)

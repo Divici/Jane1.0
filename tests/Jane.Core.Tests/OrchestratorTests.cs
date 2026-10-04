@@ -579,4 +579,95 @@ public sealed class OrchestratorTests
         // said is typed text like any other.
         Assert.Equal("the ratio is 3/4", Assert.Single(harness.Injector.Injected));
     }
+
+    [Fact]
+    public async Task AMissingSpeechModelIsReportedRatherThanBreakingStartUp()
+    {
+        // A machine Jane has just been installed on has no models at all. Starting must still
+        // succeed -- it is what puts the tray icon, the settings window and onboarding on screen,
+        // and onboarding is the only thing that can download them.
+        var harness = new Harness { RecognizerLoadThrows = new FileNotFoundException("encoder.int8.onnx") };
+
+        await harness.DictateAsync();
+
+        Assert.Equal(PipelineState.Failed, harness.Orchestrator.Status.State);
+        Assert.Equal(PipelineFailure.EngineUnavailable, harness.Orchestrator.Status.Failure);
+        Assert.Empty(harness.Injector.Injected);
+    }
+
+    [Fact]
+    public async Task AnEngineThatCouldNotLoadIsTriedAgainOnTheNextKeyPress()
+    {
+        // The model was missing at launch and has been downloaded since. Nothing told the
+        // pipeline -- and nothing should have to. The old behaviour remembered the first failure
+        // for the life of the process, so a freshly installed Jane could not dictate until it was
+        // quit and started again, with nothing on screen to say so.
+        var harness = new Harness { RecognizerLoadThrows = new FileNotFoundException("encoder.int8.onnx") };
+        await harness.Orchestrator.StartAsync(CancellationToken.None);
+
+        await harness.PressAndReleaseAsync();
+        Assert.Equal(PipelineFailure.EngineUnavailable, harness.Orchestrator.Status.Failure);
+
+        harness.RecognizerLoadThrows = null;
+        await harness.PressAndReleaseAsync();
+
+        Assert.Equal(PipelineState.Idle, harness.Orchestrator.Status.State);
+        Assert.Equal("hello world", Assert.Single(harness.Injector.Injected));
+    }
+
+    [Fact]
+    public async Task AnEngineThatLoadedIsNeverLoadedTwice()
+    {
+        // The retry exists for a failed load. A successful one costs over a second and holds
+        // hundreds of megabytes; doing it again on every key press would be the opposite bug.
+        var harness = new Harness();
+
+        await harness.DictateAsync("one moment");
+        await harness.PressAndReleaseAsync();
+        await harness.Orchestrator.StartAsync(CancellationToken.None);
+
+        Assert.Equal(1, harness.Recognizer.LoadAttempts);
+    }
+
+    [Fact]
+    public async Task AMissingVoiceDetectionModelFailsTheDictationInsteadOfHangingIt()
+    {
+        // Voice detection used to be built before anything else, so a missing model stopped the
+        // whole application from composing. It is built on first use now, which moves the failure
+        // here -- and an exception escaping this point left the pill on "Listening" for ever.
+        var harness = new Harness
+        {
+            VadThrows = new SpeechEngineUnavailableException("The voice detection model has not been downloaded yet."),
+        };
+
+        await harness.DictateAsync();
+
+        Assert.Equal(PipelineState.Failed, harness.Orchestrator.Status.State);
+        Assert.Equal(PipelineFailure.EngineUnavailable, harness.Orchestrator.Status.Failure);
+        Assert.Contains("voice detection", harness.Orchestrator.Status.Message, StringComparison.OrdinalIgnoreCase);
+
+        // And the next press works once it has arrived.
+        harness.VadThrows = null;
+        await harness.DictateAsync();
+
+        Assert.Equal("hello world", Assert.Single(harness.Injector.Injected));
+    }
+
+    [Fact]
+    public async Task NoFailureInsideADictationCanLeaveThePipelineStuck()
+    {
+        // The last line of defence. Whatever throws, the pipeline must come to rest in a state
+        // the next key press can start from, with a message that is not an exception's name.
+        var harness = new Harness { VadThrows = new InvalidOperationException("native library exploded") };
+
+        await harness.DictateAsync();
+
+        Assert.Equal(PipelineState.Failed, harness.Orchestrator.Status.State);
+        Assert.DoesNotContain("Exception", harness.Orchestrator.Status.Message, StringComparison.Ordinal);
+
+        harness.VadThrows = null;
+        await harness.DictateAsync();
+
+        Assert.Equal("hello world", Assert.Single(harness.Injector.Injected));
+    }
 }

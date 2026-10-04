@@ -87,6 +87,15 @@ internal sealed class Harness
 
     public Task? RecognizerLoadGate { get; init; }
 
+    /// <summary>
+    /// Thrown by every load until it is cleared, which is what a model that has not been
+    /// downloaded yet looks like from here.
+    /// </summary>
+    public Exception? RecognizerLoadThrows { get; set; }
+
+    /// <summary>Thrown by voice detection until it is cleared: its model is a download too.</summary>
+    public Exception? VadThrows { get; set; }
+
     /// <summary>Where the pipeline is allowed to write. Asserted to contain no audio.</summary>
     public string? StateDirectory { get; init; }
 
@@ -99,6 +108,19 @@ internal sealed class Harness
                 return [.. _states];
             }
         }
+    }
+
+    /// <summary>
+    /// Press, hold and release with nothing else: no start-up call in front of it. What a key
+    /// press looks like to a Jane that has been running for an hour.
+    /// </summary>
+    public async Task PressAndReleaseAsync()
+    {
+        _states.Clear();
+
+        Orchestrator.OnHotkey(new HotkeyEvent(HotkeyEventKind.Pressed, TimeSpan.Zero, DateTimeOffset.Now));
+        Orchestrator.OnHotkey(new HotkeyEvent(HotkeyEventKind.Released, TimeSpan.FromSeconds(1), DateTimeOffset.Now));
+        await Orchestrator.WaitForIdleAsync(CancellationToken.None);
     }
 
     /// <summary>Press, hold, release, and wait for the pipeline to settle.</summary>
@@ -187,6 +209,8 @@ internal sealed class Harness
 
         public int Calls { get; private set; }
 
+        public int LoadAttempts { get; private set; }
+
         // Read through to the harness so a `new Harness { Transcript = ... }` initialiser, which
         // runs after this constructor, is still honoured.
         private string? _transcript;
@@ -208,9 +232,16 @@ internal sealed class Harness
 
         public async Task LoadAsync(CancellationToken cancellationToken)
         {
+            LoadAttempts++;
+
             if (harness.RecognizerLoadGate is { } gate)
             {
                 await gate.WaitAsync(cancellationToken);
+            }
+
+            if (harness.RecognizerLoadThrows is { } failure)
+            {
+                throw failure;
             }
 
             IsLoaded = true;
@@ -299,11 +330,18 @@ internal sealed class Harness
 
     internal sealed class FakeVad(Harness harness) : IVoiceActivityGate
     {
-        public VoiceActivityResult Process(ReadOnlyMemory<float> samples) =>
-            new(
+        public VoiceActivityResult Process(ReadOnlyMemory<float> samples)
+        {
+            if (harness.VadThrows is { } failure)
+            {
+                throw failure;
+            }
+
+            return new VoiceActivityResult(
                 harness.SpeechDetected,
                 harness.SpeechDetected ? samples : ReadOnlyMemory<float>.Empty,
                 harness.Segments);
+        }
     }
 
     internal sealed class FakeFormatter : ITranscriptFormatter
