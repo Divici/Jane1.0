@@ -306,8 +306,7 @@ public sealed class DictationOrchestrator : IAsyncDisposable
         {
             if (!_audioOpened)
             {
-                await _audio.OpenAsync(cancellationToken);
-                _audioOpened = true;
+                await ReadyMicrophoneAsync(cancellationToken);
             }
 
             await _recognizer.LoadAsync(cancellationToken);
@@ -320,6 +319,33 @@ public sealed class DictationOrchestrator : IAsyncDisposable
             // reports it, and every press tries again.
             signal.TrySetException(new SpeechEngineUnavailableException(
                 "The speech engine could not be loaded.", ex));
+        }
+    }
+
+    /// <summary>
+    /// Readies the microphone without letting its failure stand in for the speech engine's.
+    /// </summary>
+    /// <remarks>
+    /// The two used to share one try block, so a machine with no microphone reported "The speech
+    /// engine could not be loaded" on every key press -- blaming a model that was fine, and
+    /// replacing the one line that named the cause. The microphone's failure is logged here and
+    /// published through the source's own state, which is where the key press reads it from; the
+    /// source retries on its own terms (a reconnect loop, or the next arm), so nothing here needs
+    /// to remember to.
+    /// </remarks>
+    private async Task ReadyMicrophoneAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _audio.OpenAsync(cancellationToken);
+            _audioOpened = true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.Write(LogLevel.Warning, "audio", "The microphone could not be readied at startup.", LogFields.New()
+                .Add("exception", ex.GetType().FullName)
+                .Add("detail", ex.Message)
+                .Add("inner", ex.InnerException?.Message));
         }
     }
 
@@ -345,7 +371,7 @@ public sealed class DictationOrchestrator : IAsyncDisposable
                 break;
 
             case HotkeyEventKind.Released:
-                Release(CaptureStopReason.Released);
+                Release(CaptureStopReason.Released, hotkeyEvent.Duration);
                 break;
 
             case HotkeyEventKind.TooShort:
@@ -408,7 +434,9 @@ public sealed class DictationOrchestrator : IAsyncDisposable
         }
     }
 
-    private void Release(CaptureStopReason reason)
+    /// <param name="held">How long the key was down, for the log. The capture's own length is
+    /// shorter by whatever the microphone slept through, and the difference is the clipped word.</param>
+    private void Release(CaptureStopReason reason, TimeSpan held)
     {
         if (Status.State is not (PipelineState.Arming or PipelineState.Listening))
         {
@@ -417,7 +445,7 @@ public sealed class DictationOrchestrator : IAsyncDisposable
 
         var audio = _audio.Stop(reason);
         _pending = audio;
-        _inFlight = RunAsync(audio, _cancellation?.Token ?? CancellationToken.None);
+        _inFlight = RunAsync(audio, held, _cancellation?.Token ?? CancellationToken.None);
     }
 
     private void Abandon(CaptureStopReason reason, PipelineState terminal)
@@ -435,7 +463,7 @@ public sealed class DictationOrchestrator : IAsyncDisposable
         Settle();
     }
 
-    private async Task RunAsync(CapturedAudio audio, CancellationToken cancellationToken)
+    private async Task RunAsync(CapturedAudio audio, TimeSpan held, CancellationToken cancellationToken)
     {
         // Captured before the try so the log line can be written from the finally on every path,
         // including the ones that throw. The target is copied because a second key-down during
@@ -465,7 +493,7 @@ public sealed class DictationOrchestrator : IAsyncDisposable
 
             if (!voice.ContainsSpeech)
             {
-                Fail(PipelineFailure.NoSpeech, PipelineStatus.DefaultMessageFor(PipelineFailure.NoSpeech));
+                FailForSilence(audio);
                 return;
             }
 
@@ -642,7 +670,7 @@ public sealed class DictationOrchestrator : IAsyncDisposable
         }
         finally
         {
-            LogDictation(target, audio, recognitionTime, injection, Stopwatch.GetElapsedTime(startedAt));
+            LogDictation(target, audio, held, recognitionTime, injection, Stopwatch.GetElapsedTime(startedAt));
 
             // The buffer is dropped on every path, including the failing ones. Audio is never
             // retained beyond the dictation that produced it.
@@ -670,6 +698,7 @@ public sealed class DictationOrchestrator : IAsyncDisposable
     private void LogDictation(
         TargetWindow target,
         CapturedAudio audio,
+        TimeSpan held,
         TimeSpan recognitionTime,
         InjectionResult? injection,
         TimeSpan total)
@@ -701,7 +730,9 @@ public sealed class DictationOrchestrator : IAsyncDisposable
                 .Add("result", result)
                 .Add("chars", injection?.CharactersSent)
                 .Add("audio", audio.Duration)
+                .Add("held", held)
                 .Add("preroll", AudioFormat.DurationOf(audio.PreRollSamples))
+                .Add("lag", audio.StartupLag)
                 .Add("stop", audio.StopReason)
                 .Add("asr", recognitionTime)
                 .Add("inject", injection?.Elapsed)
@@ -803,6 +834,48 @@ public sealed class DictationOrchestrator : IAsyncDisposable
             Fail(PipelineFailure.EngineUnavailable, ex.Message);
             return false;
         }
+    }
+
+    /// <summary>
+    /// A hold under this that heard nothing is more likely a device still waking than a muted one.
+    /// </summary>
+    /// <remarks>
+    /// The two cold-start "no speech" dictations from the morning this was diagnosed held 1.6 and
+    /// 2.0 seconds of audio. A muted microphone produces the same buffer however long the key is
+    /// held, so past a couple of seconds the waking explanation stops being the likelier one.
+    /// </remarks>
+    private static readonly TimeSpan StillStartingCeiling = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// Says why a capture held no speech, which is not always because the user said nothing.
+    /// </summary>
+    /// <remarks>
+    /// Three different situations used to share "No speech detected", and in two of them the user
+    /// had spoken. The device's own fault report outranks everything: a microphone that says it
+    /// was unplugged is not a quiet user. A buffer of exact zeros is a device that was not hearing
+    /// -- muted, or a Bluetooth link that was still coming up when the key was released -- and
+    /// the remedy differs between those two, so the words do. Only a buffer with a noise floor and
+    /// no words in it is the user.
+    /// </remarks>
+    private void FailForSilence(CapturedAudio audio)
+    {
+        if (_audio.State.Error is { Length: > 0 } error)
+        {
+            Fail(PipelineFailure.NoMicrophone, error);
+            return;
+        }
+
+        if (audio.StartupLag is null)
+        {
+            Fail(
+                PipelineFailure.MicrophoneSilent,
+                audio.Duration <= StillStartingCeiling
+                    ? "The microphone was still starting when you let go. Hold the key a little longer, or set it to stay open in Settings."
+                    : PipelineStatus.DefaultMessageFor(PipelineFailure.MicrophoneSilent));
+            return;
+        }
+
+        Fail(PipelineFailure.NoSpeech, PipelineStatus.DefaultMessageFor(PipelineFailure.NoSpeech));
     }
 
     private void Fail(PipelineFailure failure, string message) =>

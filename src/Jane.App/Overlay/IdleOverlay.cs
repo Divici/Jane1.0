@@ -42,9 +42,11 @@ public static class IdleOverlay
     /// Ctrl to dictate" a second and a half before holding Right Ctrl did anything would give
     /// exactly the impression it exists to prevent.
     /// </param>
-    /// <param name="microphoneOpen">
-    /// Whether the capture device is actually live. False between key-down and the driver handing
-    /// over a stream, which is where the clipped first word comes from.
+    /// <param name="microphoneLive">
+    /// Whether the capture device is actually delivering sound. False between key-down and the
+    /// first buffer that carries any -- which on a Bluetooth headset is half a second after the
+    /// stream was started, and is where the clipped first word comes from. A started stream that
+    /// is still handing back zeros is not live, whatever its start call said.
     /// </param>
     public static OverlayStatus For(
         OverlayStatus pipeline,
@@ -53,16 +55,16 @@ public static class IdleOverlay
         bool paused,
         bool fullscreen = false,
         bool ready = true,
-        bool microphoneOpen = true)
+        bool microphoneLive = true)
     {
         ArgumentNullException.ThrowIfNull(pipeline);
         ArgumentNullException.ThrowIfNull(overlay);
         ArgumentNullException.ThrowIfNull(binding);
 
-        // Claiming to listen before the microphone exists is what makes people speak into a
+        // Claiming to listen before the microphone is hearing is what makes people speak into a
         // device that is not there yet. Only Listening waits: by the time Jane is transcribing or
-        // typing the device has been released again, so a closed microphone means nothing there.
-        if (pipeline.State == OverlayState.Listening && !microphoneOpen)
+        // typing the device may have been released again, so a quiet microphone means nothing there.
+        if (pipeline.State == OverlayState.Listening && !microphoneLive)
         {
             return new OverlayStatus(OverlayState.Connecting, "Connecting...");
         }

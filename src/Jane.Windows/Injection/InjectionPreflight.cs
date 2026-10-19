@@ -15,7 +15,11 @@ internal readonly record struct PreflightAbort(InjectionFailure Failure, string 
 /// normal shape of a hold-to-talk release, and being able to see it is what distinguishes a
 /// healthy injection from one that typed underneath a stuck modifier.
 /// </remarks>
-internal readonly record struct PreflightOutcome(PreflightAbort? Abort, ModifierGateResult? Gate)
+/// <param name="Note">
+/// Something worth recording about an injection that went ahead: focus moved to another window of
+/// the same application, say. Null on the ordinary path.
+/// </param>
+internal readonly record struct PreflightOutcome(PreflightAbort? Abort, ModifierGateResult? Gate, string? Note = null)
 {
     /// <summary>Folds the gate result into the diagnostics shape the rest of Jane reads.</summary>
     public InjectionDiagnostics Describe() => Gate is not { } gate
@@ -78,16 +82,29 @@ internal sealed class InjectionPreflight(
         }
 
         var current = focusTracker.GetForegroundWindow();
-        if (!current.MatchesIdentity(target))
+        if (current.MatchesIdentity(target))
         {
-            return new PreflightOutcome(
-                new PreflightAbort(
-                    InjectionFailure.TargetChanged,
-                    $"Focus moved from {DescribeApp(target)} to {DescribeApp(current)} while Jane was working."),
-                gate);
+            return new PreflightOutcome(Abort: null, gate);
         }
 
-        return new PreflightOutcome(Abort: null, gate);
+        // Another window of the same process is still the application the user was dictating
+        // into: Chrome's address-bar suggestions, an Electron command palette, a Save dialog. Two
+        // of the five injection failures in the field log were "focus moved from chrome to chrome",
+        // a finished dictation thrown away over a pop-up. The leak this check exists to stop is a
+        // *different* application, and that still aborts.
+        if (current.MatchesApplication(target))
+        {
+            return new PreflightOutcome(
+                Abort: null,
+                gate,
+                Note: $"Focus moved to another {DescribeApp(target)} window (0x{target.Handle:X} to 0x{current.Handle:X}) while Jane was working; the text went to the one that has focus now.");
+        }
+
+        return new PreflightOutcome(
+            new PreflightAbort(
+                InjectionFailure.TargetChanged,
+                $"Focus moved from {DescribeApp(target)} to {DescribeApp(current)} while Jane was working."),
+            gate);
     }
 
     private static string DescribeApp(TargetWindow window) =>

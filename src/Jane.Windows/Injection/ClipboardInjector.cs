@@ -167,7 +167,8 @@ public sealed class ClipboardInjector : ITextInjector
         }
 
         return new InjectionResult(
-            true, InjectionStrategy.Clipboard, text.Length, Stopwatch.GetElapsedTime(startedAt))
+            true, InjectionStrategy.Clipboard, text.Length, Stopwatch.GetElapsedTime(startedAt),
+            Detail: preflight.Note)
         {
             Diagnostics = diagnostics with
             {

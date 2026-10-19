@@ -44,6 +44,13 @@ public sealed class SettingsStoreTests : IDisposable
         Assert.False(settings.Hotkey.EnabledInGame);
         Assert.Equal(300, settings.Hotkey.MinimumHoldMs);
 
+        // The microphone is held open. Starting it on key-down loses whatever is said while the
+        // device wakes -- half a second on a Bluetooth headset, measured -- and no pre-roll can
+        // back-date audio that was never captured. On-demand capture stays as a choice for people
+        // who want a headset back in stereo between dictations, with a minute's grace.
+        Assert.Equal(MicrophoneActivation.AlwaysOpen, settings.Microphone.Activation);
+        Assert.Equal(60, settings.Microphone.IdleReleaseSeconds);
+
         // Biasing forces beam search, so it stays off until `bench` proves it affordable.
         Assert.False(settings.Speech.EnableHotwordBiasing);
     }

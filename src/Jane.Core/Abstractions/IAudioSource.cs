@@ -46,52 +46,92 @@ public sealed record CapturedAudio(
     DateTimeOffset StartedAt)
 {
     public TimeSpan Duration => AudioFormat.DurationOf(Samples.Length);
+
+    /// <summary>
+    /// How much of the capture went by before the device delivered any sound at all.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Zero when the device was already delivering sound at key-down, which is the whole of the
+    /// case for a microphone held open. A positive value is dead air: the stream was started on
+    /// key-down and handed back digital silence while it woke up -- measured at 360 to 570 ms on a
+    /// Jabra Link 380, and the words spoken in that window were never recorded. Null means no
+    /// sound arrived during the capture at all, which is a muted or dead microphone rather than a
+    /// quiet user, and is reported as such.
+    /// </para>
+    /// <para>
+    /// Measured in audio delivered rather than on a clock, so it says how much of the buffer is
+    /// dead rather than how long a thread took to notice. Defaults to zero so a source that does
+    /// not measure it never produces a microphone failure it cannot stand behind.
+    /// </para>
+    /// </remarks>
+    public TimeSpan? StartupLag { get; init; } = TimeSpan.Zero;
 }
 
+/// <param name="IsOpen">The endpoint is activated: a capture stream has been started on it.</param>
 /// <param name="IsCapturing">True between arm and stop. The overlay's "listening" state mirrors this.</param>
-public sealed record AudioSourceState(bool IsOpen, bool IsCapturing, string? DeviceName, string? Error);
+/// <param name="IsLive">
+/// The started stream has delivered actual sound. Distinct from <paramref name="IsOpen"/> because
+/// a stream that has just been started hands back digital silence while the device wakes -- half
+/// a second on a Bluetooth headset -- and a pill that said "Listening" during that window invited
+/// the user to speak into a microphone that was not hearing them yet.
+/// </param>
+public sealed record AudioSourceState(
+    bool IsOpen,
+    bool IsCapturing,
+    string? DeviceName,
+    string? Error,
+    bool IsLive = false);
 
 /// <summary>When Jane holds a capture stream on the microphone.</summary>
 /// <remarks>
 /// <para>
 /// This is not the free choice it looks like. Windows switches a Bluetooth headset from A2DP to
 /// the hands-free profile the moment any process opens a capture stream on it, and the hands-free
-/// profile is a narrowband mono call channel -- so an always-open microphone silently degrades
-/// every other sound on the machine for as long as Jane is running.
+/// profile is a narrowband mono call channel -- so an always-open microphone degrades every other
+/// sound on the machine for as long as Jane is running. That is why <see cref="WhileDictating"/>
+/// was the default for a while.
 /// </para>
 /// <para>
-/// The plan originally priced holding the device open as "a permanent mic-in-use indicator". On
-/// a wired microphone that is the whole cost and <see cref="AlwaysOpen"/> is the better setting.
-/// On Bluetooth it is not, which is why the default changed.
+/// It stopped being the default because of a measurement. On a Jabra Link 380 a started stream
+/// returns from its start call in 10 ms and delivers its first buffer at 40 ms -- and every sample
+/// is zero until 360 to 570 ms have passed, while the dongle brings the headset's link up. No
+/// amount of readying the client in advance shortens that: the dead zone is the headset's, not the
+/// host's. Anything the user said in it was never recorded, and the field log showed exactly that:
+/// 40 of 49 "no speech" dictations were cold starts, two of them holding a whole short sentence.
+/// </para>
+/// <para>
+/// So the default is <see cref="AlwaysOpen"/>, which has no dead zone at all and a full second of
+/// pre-roll at every key press, at the cost of the microphone-in-use indicator and a Bluetooth
+/// headset held in its call profile. Somebody who would rather have the headset in stereo between
+/// dictations chooses <see cref="WhileDictating"/>, and gets a pill that says Connecting until
+/// sound actually arrives rather than one that says Listening while it is not.
 /// </para>
 /// </remarks>
 public enum MicrophoneActivation
 {
     /// <summary>
-    /// Default. Capture starts when the hotkey goes down and stops a short while after the
-    /// dictation ends.
+    /// Capture starts when the hotkey goes down and stops a while after the dictation ends.
     /// </summary>
     /// <remarks>
-    /// The device is <em>readied</em> ahead of time and kept ready; only capture is on demand.
-    /// That distinction is the whole fix for the clipped first word: readying is the expensive
-    /// half and is silent -- no samples, no indicator, no profile switch -- while starting is the
-    /// cheap half and is the only part a key press pays for. Before the split, key-down paid for
-    /// both and the user was already a syllable in by the time the first sample arrived.
     /// <para>
-    /// "Ahead of time" means at launch and again straight after each idle release, because a
-    /// capture stream cannot be started twice. Keeping a stopped one for the next press is what
-    /// made every dictation after the first fail with "no microphone".
+    /// For Bluetooth headsets. The device is readied ahead of time -- at launch and again straight
+    /// after each idle release, because a capture stream cannot be started twice -- so key-down
+    /// pays only for starting the stream. Starting is quick to <em>return</em>; the device then
+    /// hands back digital silence until it is actually awake, half a second on a Bluetooth link,
+    /// and nothing said before that moment exists to be recorded.
     /// </para>
     /// <para>
-    /// The pre-roll still cannot back-date audio from before the stream was started, so the second
-    /// of history it holds is only useful within the idle window, between consecutive dictations.
+    /// The overlay therefore shows Connecting until the first buffer with sound in it arrives, and
+    /// the capture records how much dead air there was, so the user is told to wait rather than
+    /// invited to speak into a microphone that is not hearing them yet.
     /// </para>
     /// </remarks>
     WhileDictating,
 
     /// <summary>
-    /// Opened at startup and held. No open latency, full pre-roll, and a microphone that is in
-    /// use for as long as Jane is.
+    /// Default. Opened at startup and held. Nothing to wake on key-down, a full second of pre-roll
+    /// behind every press, and a microphone that is in use for as long as Jane is.
     /// </summary>
     AlwaysOpen,
 }

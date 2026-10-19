@@ -122,6 +122,65 @@ public sealed class MigrationTests : IDisposable
     }
 
     [Fact]
+    public async Task MigrationTwo_MovesTheOldMicrophoneDefaultOntoAlwaysOpen()
+    {
+        // The old default was "only while dictating" with an eight-second grace window, and it
+        // clipped the first half-second of every cold dictation on a Bluetooth headset. A database
+        // written under that default carries the value itself, so changing the code's default
+        // alone would have fixed fresh installs and nobody else.
+        using (var v1 = JaneDatabase.Open(Paths, [JaneMigrations.All[0]]))
+        {
+            var settings = new SettingsRepository(v1);
+            await settings.WriteAsync(
+                new JaneSettings { Microphone = new MicrophoneSettings(MicrophoneActivation.WhileDictating, 8) },
+                TestContext.Current.CancellationToken);
+        }
+
+        using var current = JaneDatabase.Open(Paths);
+        var migrated = new SettingsRepository(current).Read();
+
+        Assert.Equal(MicrophoneActivation.AlwaysOpen, migrated.Microphone.Activation);
+        Assert.Equal(60, migrated.Microphone.IdleReleaseSeconds);
+    }
+
+    [Fact]
+    public async Task MigrationTwo_LeavesAGraceWindowSomebodyChoseAlone()
+    {
+        // Eight was the default and is replaced; any other number was typed by a person.
+        using (var v1 = JaneDatabase.Open(Paths, [JaneMigrations.All[0]]))
+        {
+            var settings = new SettingsRepository(v1);
+            await settings.WriteAsync(
+                new JaneSettings { Microphone = new MicrophoneSettings(MicrophoneActivation.WhileDictating, 20) },
+                TestContext.Current.CancellationToken);
+        }
+
+        using var current = JaneDatabase.Open(Paths);
+        var migrated = new SettingsRepository(current).Read();
+
+        Assert.Equal(MicrophoneActivation.AlwaysOpen, migrated.Microphone.Activation);
+        Assert.Equal(20, migrated.Microphone.IdleReleaseSeconds);
+    }
+
+    [Fact]
+    public async Task MigrationTwo_IsAppliedOnceAndNeverUndoesALaterChoice()
+    {
+        // Somebody who reads the new description and still wants on-demand capture for their
+        // headset must get to keep it across every later launch.
+        using (var database = JaneDatabase.Open(Paths))
+        {
+            var settings = new SettingsRepository(database);
+            await settings.UpdateAsync(
+                s => s with { Microphone = s.Microphone with { Activation = MicrophoneActivation.WhileDictating } },
+                TestContext.Current.CancellationToken);
+        }
+
+        using var reopened = JaneDatabase.Open(Paths);
+
+        Assert.Equal(MicrophoneActivation.WhileDictating, new SettingsRepository(reopened).Read().Microphone.Activation);
+    }
+
+    [Fact]
     public async Task SettingsRoundTripThroughSqlite_PreservingEveryNestedSection()
     {
         var original = new JaneSettings

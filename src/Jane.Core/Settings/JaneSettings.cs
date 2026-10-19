@@ -58,15 +58,21 @@ public sealed record HotkeySettings(
     public HotkeyBinding ToBinding() => new(VirtualKey, Modifiers ?? []);
 }
 
-/// <param name="Activation">When Jane holds a capture stream open. See the enum -- the default
-/// is the way it is because of Bluetooth headsets, not because of the mic-in-use indicator.</param>
+/// <param name="Activation">
+/// When Jane holds a capture stream open. Held open by default: a stream started on key-down
+/// delivers digital silence while the device wakes -- half a second on a Bluetooth headset,
+/// measured -- and the words said in that window are never recorded. See the enum for the
+/// measurement, and for why on-demand capture is still offered.
+/// </param>
 /// <param name="IdleReleaseSeconds">
 /// How long the device stays open after a dictation under
-/// <see cref="MicrophoneActivation.WhileDictating"/>.
+/// <see cref="MicrophoneActivation.WhileDictating"/>. A minute: in the field log, corrected for
+/// how long each key was held, 53% of dictations found a warm microphone at eight seconds and 71%
+/// at sixty.
 /// </param>
 public sealed record MicrophoneSettings(
-    MicrophoneActivation Activation = MicrophoneActivation.WhileDictating,
-    int IdleReleaseSeconds = 8);
+    MicrophoneActivation Activation = MicrophoneActivation.AlwaysOpen,
+    int IdleReleaseSeconds = 60);
 
 /// <param name="IdleUnloadSeconds">
 /// How long after the last dictation Jane issues its single explicit unload. The request-level

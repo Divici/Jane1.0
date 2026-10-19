@@ -125,10 +125,15 @@ public interface ICaptureDeviceFactory
 /// Whether to retry at all. Off in tests that assert the failure state itself.
 /// </param>
 /// <param name="DeviceId">Explicit endpoint, or null for the default communications device.</param>
-/// <param name="Activation">Whether the device is held open or opened per dictation.</param>
+/// <param name="Activation">
+/// Whether the device is held open or started per dictation. Held open by default -- see
+/// <see cref="MicrophoneActivation"/> for the measurement that decided it.
+/// </param>
 /// <param name="IdleRelease">
 /// How long an on-demand device stays open after a dictation ends. Zero releases it immediately,
-/// which makes every dictation a cold open.
+/// which makes every dictation a cold start. A minute by default: in the field log, corrected for
+/// how long each key was held, 53% of dictations found a warm microphone at eight seconds and
+/// 71% at sixty, and a headset is back in stereo a minute after the user stops dictating.
 /// </param>
 public sealed record AudioCaptureOptions(
     TimeSpan PreRoll,
@@ -136,7 +141,7 @@ public sealed record AudioCaptureOptions(
     TimeSpan ReconnectInterval,
     bool AutoReconnect,
     string? DeviceId,
-    MicrophoneActivation Activation = MicrophoneActivation.WhileDictating,
+    MicrophoneActivation Activation = MicrophoneActivation.AlwaysOpen,
     TimeSpan IdleRelease = default)
 {
     public AudioCaptureOptions()
@@ -146,10 +151,13 @@ public sealed record AudioCaptureOptions(
             TimeSpan.FromSeconds(2),
             AutoReconnect: true,
             DeviceId: null,
-            Activation: MicrophoneActivation.WhileDictating,
-            IdleRelease: TimeSpan.FromSeconds(8))
+            Activation: MicrophoneActivation.AlwaysOpen,
+            IdleRelease: DefaultIdleRelease)
     {
     }
+
+    /// <summary>Sixty seconds. The reasoning is on <see cref="IdleRelease"/>.</summary>
+    public static readonly TimeSpan DefaultIdleRelease = TimeSpan.FromSeconds(60);
 
     /// <summary>These options with a routing applied, leaving everything else alone.</summary>
     public AudioCaptureOptions With(MicrophoneRouting routing)

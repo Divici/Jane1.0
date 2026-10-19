@@ -10,25 +10,41 @@ namespace Jane.Windows.Diagnostics;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The clipped-first-word fix rests on a claim: readying a capture device is slow and starting an
+/// The on-demand microphone rests on a claim: readying a capture device is slow and starting an
 /// already-readied one is fast, so moving the first half to launch takes it off the key-down path.
 /// That is true of WASAPI in general and is not equally true of every driver, and a fix nobody can
-/// check is a fix nobody should believe. So the two halves are timed separately here and both
-/// numbers go in the report.
+/// check is a fix nobody should believe. So the halves are timed separately here and every number
+/// goes in the report.
+/// </para>
+/// <para>
+/// The first version of this probe timed the start <em>call</em>, and passed a device that was
+/// clipping the first half-second of every cold dictation. On a Jabra Link 380 the call returns in
+/// 10 ms and the stream then delivers nothing but digital zeros for another 360 to 570 ms while the
+/// dongle brings the headset's link up. The number that matters is how long after the key press
+/// the first buffer with sound in it arrives, so that is what is waited for and judged now.
 /// </para>
 /// <para>
 /// This probe does briefly activate the endpoint -- there is no way to measure a start without
-/// starting. It runs only when the user asks for a diagnostic, it stops within milliseconds, and
-/// the report says so. A Bluetooth headset may audibly switch profile once while it runs; that is
-/// the cost of measuring rather than assuming.
+/// starting. It runs only when the user asks for a diagnostic, it stops within a couple of
+/// seconds, and the report says so. A Bluetooth headset may audibly switch profile once while it
+/// runs; that is the cost of measuring rather than assuming.
 /// </para>
 /// </remarks>
 public sealed class MicrophoneLatencyProbe(ICaptureDeviceFactory? devices = null, string? deviceId = null) : IProbe
 {
     private readonly ICaptureDeviceFactory _devices = devices ?? new WasapiDeviceFactory();
 
-    /// <summary>Above this, a key press is late enough that a fast speaker loses a syllable.</summary>
+    /// <summary>Above this, the start call itself is slow enough that a fast speaker loses a syllable.</summary>
     private static readonly TimeSpan StartBudget = TimeSpan.FromMilliseconds(50);
+
+    /// <summary>
+    /// Above this, the device is awake late enough that the first word of a cold dictation is
+    /// clipped. A wired microphone delivers sound in its first buffer, 20 to 40 ms after the start.
+    /// </summary>
+    private static readonly TimeSpan FirstSoundBudget = TimeSpan.FromMilliseconds(150);
+
+    /// <summary>How long to wait for sound before concluding the device is not going to deliver any.</summary>
+    private static readonly TimeSpan FirstSoundTimeout = TimeSpan.FromMilliseconds(1_500);
 
     public string Name => "audio.microphone_latency";
 
@@ -48,22 +64,40 @@ public sealed class MicrophoneLatencyProbe(ICaptureDeviceFactory? devices = null
                 ["open_ms"] = Milliseconds(first.Open),
                 ["prepare_ms"] = Milliseconds(first.Prepare),
                 ["start_ms"] = Milliseconds(first.Start),
+                ["first_sound_ms"] = first.FirstSound is { } sound ? Milliseconds(sound) : "none",
                 ["second_open_ms"] = Milliseconds(second.Open),
                 ["second_start_ms"] = Milliseconds(second.Start),
+                ["second_first_sound_ms"] = second.FirstSound is { } secondSound ? Milliseconds(secondSound) : "none",
                 ["keydown_budget_ms"] = Milliseconds(StartBudget),
+                ["first_sound_budget_ms"] = Milliseconds(FirstSoundBudget),
             };
 
-            var detail =
-                $"\"{second.Device}\": readying costs {Milliseconds(second.Open + second.Prepare)} ms and is paid off the key-down path; a key press costs {Milliseconds(second.Start)} ms, measured on a rebuilt device rather than a fresh one.";
+            var readying = $"\"{second.Device}\": readying costs {Milliseconds(second.Open + second.Prepare)} ms and is paid off the key-down path.";
 
-            return second.Start <= StartBudget
-                ? new ProbeResult(Name, ProbeStatus.Pass, detail, Data: data)
-                : new ProbeResult(
+            if (second.FirstSound is not { } firstSound)
+            {
+                return new ProbeResult(
                     Name,
                     ProbeStatus.Warn,
-                    detail + $" That is over the {Milliseconds(StartBudget)} ms budget, so the first word of a dictation can still be clipped.",
-                    Remedy: "Try a different microphone, or switch the microphone setting to \"All the time\" -- which removes the start cost entirely, at the price of holding a Bluetooth headset in its narrowband call profile.",
+                    readying + $" After a key press the start call returned in {Milliseconds(second.Start)} ms, but the device delivered no sound within {Milliseconds(FirstSoundTimeout)} ms of starting.",
+                    Remedy: "Check the microphone is not muted -- on the device, in Settings > System > Sound > Input, and in any noise-suppression app -- and that Windows has the right one selected as the default communications device.",
                     Data: data);
+            }
+
+            var detail = readying +
+                $" After a key press the first sound arrives {Milliseconds(firstSound)} ms later (the start call itself returned in {Milliseconds(second.Start)} ms), measured on a rebuilt device rather than a fresh one.";
+
+            if (second.Start <= StartBudget && firstSound <= FirstSoundBudget)
+            {
+                return new ProbeResult(Name, ProbeStatus.Pass, detail, Data: data);
+            }
+
+            return new ProbeResult(
+                Name,
+                ProbeStatus.Warn,
+                detail + $" That is over the {Milliseconds(FirstSoundBudget)} ms budget: anything said before the device is awake is never recorded, so with the microphone set to open only while dictating the first word of a dictation can be clipped.",
+                Remedy: "Keep the microphone setting on \"All the time\", the default, which removes the wait entirely. \"Only while I'm dictating\" is for a Bluetooth headset that must drop back to stereo between dictations, and the pill then says Connecting until the device is actually hearing you.",
+                Data: data);
         }
         catch (AudioDeviceException ex)
         {
@@ -85,10 +119,15 @@ public sealed class MicrophoneLatencyProbe(ICaptureDeviceFactory? devices = null
         }
     }
 
-    private readonly record struct Cycle(string Device, TimeSpan Open, TimeSpan Prepare, TimeSpan Start);
+    /// <param name="FirstSound">
+    /// From the start call to the first buffer with a non-zero sample in it. Null when none
+    /// arrived inside <see cref="FirstSoundTimeout"/>.
+    /// </param>
+    private readonly record struct Cycle(string Device, TimeSpan Open, TimeSpan Prepare, TimeSpan Start, TimeSpan? FirstSound);
 
     /// <summary>
-    /// Opens, readies, activates and releases the device once, exactly as a dictation does.
+    /// Opens, readies, activates, listens for the first sound, and releases the device once --
+    /// exactly as a cold dictation does.
     /// </summary>
     /// <remarks>
     /// Disposing rather than stopping is not a shortcut: a capture stream is single-use, so
@@ -108,11 +147,51 @@ public sealed class MicrophoneLatencyProbe(ICaptureDeviceFactory? devices = null
             stream.Prepare();
             var prepare = Stopwatch.GetElapsedTime(preparedAt);
 
-            var startedAt = Stopwatch.GetTimestamp();
-            stream.Start();
-            var start = Stopwatch.GetElapsedTime(startedAt);
+            // Subscribed before the start, because a wired device delivers sound in its very
+            // first buffer and that buffer can arrive before the start call has returned.
+            var startedAt = 0L;
+            var heard = new TaskCompletionSource<TimeSpan>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-            return new Cycle(stream.DeviceName, open, prepare, start);
+            void OnSamples(object? sender, ReadOnlyMemory<float> samples)
+            {
+                if (heard.Task.IsCompleted)
+                {
+                    return;
+                }
+
+                foreach (var sample in samples.Span)
+                {
+                    if (sample != 0f)
+                    {
+                        heard.TrySetResult(Stopwatch.GetElapsedTime(startedAt));
+                        return;
+                    }
+                }
+            }
+
+            stream.SamplesAvailable += OnSamples;
+            try
+            {
+                startedAt = Stopwatch.GetTimestamp();
+                stream.Start();
+                var start = Stopwatch.GetElapsedTime(startedAt);
+
+                TimeSpan? firstSound;
+                try
+                {
+                    firstSound = await heard.Task.WaitAsync(FirstSoundTimeout, cancellationToken).ConfigureAwait(false);
+                }
+                catch (TimeoutException)
+                {
+                    firstSound = null;
+                }
+
+                return new Cycle(stream.DeviceName, open, prepare, start, firstSound);
+            }
+            finally
+            {
+                stream.SamplesAvailable -= OnSamples;
+            }
         }
         finally
         {

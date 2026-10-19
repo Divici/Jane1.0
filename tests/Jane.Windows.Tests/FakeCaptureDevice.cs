@@ -1,3 +1,4 @@
+using Jane.Core.Abstractions;
 using Jane.Windows.Audio;
 
 namespace Jane.Windows.Tests;
@@ -45,6 +46,17 @@ internal sealed class FakeCaptureDeviceFactory : ICaptureDeviceFactory
     /// </remarks>
     public int FailStartsForFirstStreams { get; init; }
 
+    /// <summary>
+    /// How long after <see cref="FakeCaptureStream.Start"/> the stream delivers its first sound,
+    /// standing in for a device that hands back digital silence while it wakes up.
+    /// </summary>
+    /// <remarks>
+    /// Null, the default, means the stream never emits on its own and a test feeds it explicitly.
+    /// Set, it stands in for what a Jabra Link 380 does: buffers arrive within 40 ms of the start,
+    /// and every sample in them is zero for the next 360 to 570 ms.
+    /// </remarks>
+    public TimeSpan? SoundDelay { get; init; }
+
     public FakeCaptureStream? Current { get; private set; }
 
     /// <summary>Every device id passed to <see cref="OpenAsync"/>, in order.</summary>
@@ -73,6 +85,7 @@ internal sealed class FakeCaptureDeviceFactory : ICaptureDeviceFactory
         Current = new FakeCaptureStream
         {
             StartDelay = StartDelay,
+            SoundDelay = SoundDelay,
             RefusesToStart = OpenCount <= FailStartsForFirstStreams,
         };
         return Current;
@@ -98,6 +111,9 @@ internal sealed class FakeCaptureStream : ICaptureStream
 
     /// <summary>Stands in for a driver that refuses to activate an endpoint at all.</summary>
     public bool RefusesToStart { get; init; }
+
+    /// <summary>See <see cref="FakeCaptureDeviceFactory.SoundDelay"/>.</summary>
+    public TimeSpan? SoundDelay { get; init; }
 
     public event EventHandler<ReadOnlyMemory<float>>? SamplesAvailable;
 
@@ -146,6 +162,33 @@ internal sealed class FakeCaptureStream : ICaptureStream
 
         IsRunning = true;
         StartCount++;
+
+        if (SoundDelay is { } delay)
+        {
+            // Digital silence first, then sound, the way a waking headset does it. On a thread of
+            // its own because that is where a real device callback arrives from too.
+            _ = Task.Run(async () =>
+            {
+                Emit(new float[AudioFormat.SamplesFor(TimeSpan.FromMilliseconds(20))]);
+                await Task.Delay(delay);
+                if (IsRunning)
+                {
+                    Emit(Tone(AudioFormat.SamplesFor(TimeSpan.FromMilliseconds(20))));
+                }
+            });
+        }
+    }
+
+    /// <summary>A quiet tone: unmistakably sound, never mistaken for a device that is still waking.</summary>
+    public static float[] Tone(int samples)
+    {
+        var buffer = new float[samples];
+        for (var i = 0; i < buffer.Length; i++)
+        {
+            buffer[i] = (float)(Math.Sin(i * 0.05) * 0.2);
+        }
+
+        return buffer;
     }
 
     /// <summary>

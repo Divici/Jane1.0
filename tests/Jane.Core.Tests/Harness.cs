@@ -157,10 +157,35 @@ internal sealed class Harness
 
         public int ArmCount { get; private set; }
 
+        /// <summary>Set to make the startup open throw, as a machine with no microphone does.</summary>
+        public Exception? OpenThrows { get; set; }
+
+        /// <summary>
+        /// A capture that heard nothing at all: every sample zero, the way a muted microphone or a
+        /// Bluetooth link still waking up delivers it. The buffer is still the usual length.
+        /// </summary>
+        public bool SilentCapture { get; set; }
+
+        /// <summary>What the device reports is wrong with it, as the real source publishes it.</summary>
+        public string? Error
+        {
+            get => State.Error;
+            set => State = State with { Error = value };
+        }
+
         public Task OpenAsync(CancellationToken cancellationToken)
         {
+            if (OpenThrows is { } failure)
+            {
+                // The real source publishes the failure before it throws, so a key press has
+                // something to report.
+                State = State with { IsOpen = false, Error = failure.Message };
+                StateChanged?.Invoke(this, State);
+                throw failure;
+            }
+
             Opened = true;
-            State = State with { IsOpen = true };
+            State = State with { IsOpen = true, IsLive = true };
             StateChanged?.Invoke(this, State);
             return Task.CompletedTask;
         }
@@ -188,12 +213,18 @@ internal sealed class Harness
             // not the only thing standing between silence and the recogniser. One second unless a
             // test is specifically about the length.
             var samples = new float[AudioFormat.SamplesFor(CaptureLength)];
-            for (var i = 0; i < samples.Length; i++)
+            if (!SilentCapture)
             {
-                samples[i] = (float)(Math.Sin(i * 0.05) * 0.2);
+                for (var i = 0; i < samples.Length; i++)
+                {
+                    samples[i] = (float)(Math.Sin(i * 0.05) * 0.2);
+                }
             }
 
-            return new CapturedAudio(samples, AudioFormat.SamplesFor(TimeSpan.FromMilliseconds(500)), reason, DateTimeOffset.Now);
+            return new CapturedAudio(samples, AudioFormat.SamplesFor(TimeSpan.FromMilliseconds(500)), reason, DateTimeOffset.Now)
+            {
+                StartupLag = SilentCapture ? null : TimeSpan.Zero,
+            };
         }
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;

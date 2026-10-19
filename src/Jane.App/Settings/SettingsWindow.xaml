@@ -205,7 +205,7 @@
                         </c:SettingsGroup>
 
                         <c:SettingsGroup Header="When Jane listens"
-                                         Description="Holding the microphone open costs more than an icon on a Bluetooth headset: Windows drops the headset into its narrowband call profile for as long as any app is capturing, and everything you play through it sounds worse until the app lets go. Whichever setting you choose, Jane opts out of the attenuation Windows applies to other apps while a communications microphone is live, so your music does not drop each time you dictate.">
+                                         Description="Held open, the microphone hears you from the instant you press the key. Started on demand, it takes a moment to wake -- about half a second on a Bluetooth headset -- and the words you say before then are lost, which is why that mode shows Connecting first. On-demand is still worth it on a Bluetooth headset you listen to music on: Windows drops a headset into its narrowband call profile for as long as any app is capturing. Whichever you choose, Jane opts out of the attenuation Windows applies to other apps while a communications microphone is live, so your music does not drop each time you dictate.">
                             <StackPanel>
                                 <c:SettingRow Header="Open the microphone">
                                     <ComboBox Style="{StaticResource JaneComboBox}"
@@ -222,14 +222,14 @@
                                            Text="{Binding MicrophoneActivationChoice.Description}" />
 
                                 <c:SettingRow Header="Keep it open afterwards"
-                                              Description="Seconds to hold the microphone after a dictation ends. A run of quick dictations then pays the start-up cost once instead of once each, and every one after the first keeps its half-second of pre-roll. Zero releases it immediately."
+                                              Description="Seconds to hold the microphone after a dictation ends. A run of quick dictations then pays the wake-up once instead of once each, and every one after the first keeps its second of pre-roll. Zero releases it immediately."
                                               Visibility="{Binding IsMicrophoneOnDemand, Converter={StaticResource BoolToVisibility}}">
                                     <StackPanel Orientation="Horizontal">
                                         <Slider Style="{StaticResource JaneSlider}"
                                                 Width="220"
                                                 Minimum="0"
-                                                Maximum="60"
-                                                TickFrequency="1"
+                                                Maximum="300"
+                                                TickFrequency="5"
                                                 Value="{Binding MicrophoneIdleReleaseSeconds}"
                                                 AutomationProperties.AutomationId="MicrophoneIdleRelease"
                                                 AutomationProperties.Name="Seconds to keep the microphone open after a dictation" />

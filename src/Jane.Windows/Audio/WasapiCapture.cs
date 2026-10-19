@@ -59,10 +59,30 @@ public sealed class WasapiCapture : IAudioSource
     /// <summary>Whether the endpoint is activated. Distinct from the client merely existing.</summary>
     private bool _running;
 
+    /// <summary>
+    /// Whether the started stream has delivered a buffer with sound in it.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from <see cref="_running"/>, and the distinction is the clipped first word. A
+    /// stream that has just been started is running, and on a Jabra Link 380 it hands back digital
+    /// zeros for the next 360 to 570 ms while the dongle brings the headset's link up. Written on
+    /// the device callback thread, read on the hotkey pump at arm time, cleared whenever the stream
+    /// is closed -- a fresh stream has a fresh dead zone.
+    /// </remarks>
+    private bool _live;
+
     /// <summary>Starts refused since the last key-down. Bounds the rebuild-and-retry to one.</summary>
     private int _startAttempts;
     private bool _isCapturing;
     private int _preRollSamples;
+
+    /// <summary>
+    /// Whether this capture has heard sound yet, and how many post-arm samples went by before it
+    /// did. Both under <see cref="_captureGate"/>. Live at arm counts as heard with nothing
+    /// before it: the device was awake, so there is no dead air to report.
+    /// </summary>
+    private bool _heardSound;
+    private int _samplesBeforeSound;
     private CaptureStopReason? _latchedStop;
     private float _level;
     private DateTimeOffset _startedAt;
@@ -157,9 +177,18 @@ public sealed class WasapiCapture : IAudioSource
             _latchedStop = null;
             _startedAt = DateTimeOffset.UtcNow;
             _isCapturing = true;
+
+            // A device that is already delivering sound has nothing to wake up, so there is no
+            // dead air to measure. One that is not -- a stream about to be started, or one started
+            // a moment ago and still handing back zeros -- is measured from here.
+            _heardSound = Volatile.Read(ref _live);
+            _samplesBeforeSound = 0;
         }
 
-        Publish(_state with { IsCapturing = true });
+        // IsLive re-read from the field rather than carried over: a device callback that was
+        // mid-flight when the idle release closed the previous stream can publish a stale "live"
+        // after the close did, and this is the first publish that would otherwise repeat it.
+        Publish(_state with { IsCapturing = true, IsLive = Volatile.Read(ref _live) });
 
         var stream = _stream;
         if (stream is null)
@@ -215,12 +244,12 @@ public sealed class WasapiCapture : IAudioSource
             // is a retry the user asked for rather than one Jane inflicted.
             if (_startAttempts++ == 0 && !_disposed)
             {
-                Publish(_state with { IsOpen = false, Error = null });
+                Publish(_state with { IsOpen = false, IsLive = false, Error = null });
                 Volatile.Write(ref _armed, OpenGuardedAsync(start: true, rethrow: false, CancellationToken.None));
                 return;
             }
 
-            Publish(_state with { IsOpen = false, Error = DescribeStartFailure(ex) });
+            Publish(_state with { IsOpen = false, IsLive = false, Error = DescribeStartFailure(ex) });
             return;
         }
 
@@ -300,6 +329,7 @@ public sealed class WasapiCapture : IAudioSource
         int preRollSamples;
         DateTimeOffset startedAt;
         CaptureStopReason? latched;
+        TimeSpan? startupLag;
 
         lock (_captureGate)
         {
@@ -310,6 +340,10 @@ public sealed class WasapiCapture : IAudioSource
             // no start time of its own; "now" beats a default DateTimeOffset in the history.
             startedAt = _startedAt == default ? DateTimeOffset.UtcNow : _startedAt;
             latched = _latchedStop;
+
+            // Null, not zero, when nothing was ever heard. The two look identical in the buffer
+            // and mean opposite things: zero is a device that was awake the whole time.
+            startupLag = _heardSound ? AudioFormat.DurationOf(_samplesBeforeSound) : null;
 
             _captured.ResetWrittenCount();
             _preRollSamples = 0;
@@ -323,7 +357,7 @@ public sealed class WasapiCapture : IAudioSource
         // A caller saying "released" has no opinion; anything else -- cancelled, too short -- is
         // a deliberate verdict about this dictation and outranks the latch.
         var effective = latched is not null && reason == CaptureStopReason.Released ? latched.Value : reason;
-        return new CapturedAudio(samples, preRollSamples, effective, startedAt);
+        return new CapturedAudio(samples, preRollSamples, effective, startedAt) { StartupLag = startupLag };
     }
 
     private void ScheduleIdleRelease()
@@ -409,7 +443,7 @@ public sealed class WasapiCapture : IAudioSource
         // splice two unrelated moments into one utterance.
         _preRoll.Clear();
         Volatile.Write(ref _level, 0f);
-        Publish(_state with { IsOpen = false, Error = null });
+        Publish(_state with { IsOpen = false, IsLive = false, Error = null });
 
         if (_disposed)
         {
@@ -441,7 +475,7 @@ public sealed class WasapiCapture : IAudioSource
         _running = false;
         _preRoll.Clear();
         Volatile.Write(ref _level, 0f);
-        Publish(_state with { IsOpen = false, Error = null });
+        Publish(_state with { IsOpen = false, IsLive = false, Error = null });
     }
 
     /// <summary>Readies the device if it is not already, optionally starting it, publishing any failure.</summary>
@@ -532,13 +566,33 @@ public sealed class WasapiCapture : IAudioSource
         // what makes arming free -- and only the retained-capture branch takes any decision.
         var span = samples.Span;
         _preRoll.Write(span);
-        UpdateLevel(span);
+        var peak = UpdateLevel(span);
+
+        // Any non-zero sample is sound as far as "is the device awake" goes: a real microphone
+        // has a noise floor, and a waking Bluetooth link or a buffer Windows flagged silent is
+        // exactly zero. The distinction is published once, on the way up, so the overlay can
+        // stop saying Connecting; the fifty buffers a second after that change nothing.
+        var hasSound = peak > 0f;
+        var wentLive = hasSound && !Volatile.Read(ref _live);
+        if (wentLive)
+        {
+            Volatile.Write(ref _live, true);
+        }
 
         CaptureStopReason? autoStop = null;
         lock (_captureGate)
         {
             if (_isCapturing)
             {
+                if (!_heardSound && hasSound)
+                {
+                    // Everything retained since the arm, pre-roll excluded, was dead air. Whole
+                    // buffers: a 20 ms granularity is plenty for a diagnostic, and the samples
+                    // themselves are kept either way.
+                    _heardSound = true;
+                    _samplesBeforeSound = _captured.WrittenCount - _preRollSamples;
+                }
+
                 var budget = _preRollSamples + _maxCaptureSamples - _captured.WrittenCount;
                 if (span.Length < budget)
                 {
@@ -552,6 +606,11 @@ public sealed class WasapiCapture : IAudioSource
                     autoStop = CaptureStopReason.MaxDurationReached;
                 }
             }
+        }
+
+        if (wentLive)
+        {
+            Publish(_state with { IsLive = true });
         }
 
         if (autoStop is not null)
@@ -571,7 +630,9 @@ public sealed class WasapiCapture : IAudioSource
     /// </remarks>
     public float CurrentLevel => Volatile.Read(ref _level);
 
-    private void UpdateLevel(ReadOnlySpan<float> span)
+    /// <returns>The buffer's peak magnitude, so the caller can tell sound from digital silence
+    /// without a second pass over the samples.</returns>
+    private float UpdateLevel(ReadOnlySpan<float> span)
     {
         var peak = 0f;
         foreach (var sample in span)
@@ -587,6 +648,7 @@ public sealed class WasapiCapture : IAudioSource
         // through every glottal stop and read as noise rather than as speech.
         var previous = Volatile.Read(ref _level);
         Volatile.Write(ref _level, peak > previous ? peak : (previous * 0.85f) + (peak * 0.15f));
+        return peak;
     }
 
     private void OnStopped(object? sender, AudioDeviceException? error)
@@ -621,6 +683,10 @@ public sealed class WasapiCapture : IAudioSource
 
     private void CloseStream()
     {
+        // Whatever replaces this stream starts asleep. Cleared before the exchange so no callback
+        // from the old stream can re-assert it on the way out.
+        Volatile.Write(ref _live, false);
+
         var stream = Interlocked.Exchange(ref _stream, null);
         if (stream is null)
         {

@@ -16,19 +16,20 @@ namespace Jane.Windows.Tests;
 /// device was closed when they started speaking.
 /// </para>
 /// <para>
-/// The obvious fix is to hold the device open, and it is the wrong one. That is what
-/// <see cref="MicrophoneActivation.AlwaysOpen"/> already does, and it forces a Bluetooth headset
-/// into its narrowband call profile for as long as Jane is running -- degrading every other sound
-/// on the machine. The user asked for the microphone to stay off until the key is pressed, and
-/// that constraint stands.
+/// The obvious fix is to hold the device open, and for a while it was judged the wrong one,
+/// because <see cref="MicrophoneActivation.AlwaysOpen"/> forces a Bluetooth headset into its
+/// narrowband call profile for as long as Jane is running. So the two halves of "open" were
+/// separated: <c>Prepare</c> readies the device off the key-down path, and <c>Start</c> is the only
+/// part a key press pays for. Idle release rebuilds the stream rather than stopping it, because a
+/// started stream cannot be started again.
 /// </para>
 /// <para>
-/// So the two halves of "open" are separated. <c>Prepare</c> creates and initialises the audio
-/// client, which allocates the endpoint buffer and nothing else: no samples flow, no capture
-/// indicator lights, no profile switch. <c>Start</c> activates the stream, and that is the only
-/// part that happens on key-down -- single-digit milliseconds instead of several hundred. Idle
-/// release stops the stream again rather than tearing the client down, so the endpoint is
-/// inactive within seconds of the last dictation exactly as before.
+/// That split is real and these tests still hold it to account -- but it was not enough. A started
+/// stream on a Jabra Link 380 returns in 10 ms and then delivers digital zeros for 360 to 570 ms
+/// while the headset's link comes up, and nothing the host does shortens that. So holding the
+/// device open is the default after all, and on-demand capture is kept for people who want a
+/// headset back in stereo between dictations, with the overlay saying Connecting until sound is
+/// actually arriving. <see cref="LiveMicrophoneTests"/> covers that half.
 /// </para>
 /// </remarks>
 public sealed class WarmMicrophoneTests

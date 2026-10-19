@@ -60,6 +60,36 @@ public sealed class DictationLogTests
     }
 
     [Fact]
+    public async Task TheLineSaysHowLongTheKeyWasHeldAndHowMuchDeadAirTheMicrophoneAdded()
+    {
+        // "audio=1630ms preroll=0ms" could not say whether the user spoke for 1.6 seconds or held
+        // the key for three and the microphone slept through half of it. With the hold and the
+        // dead air on the line, a clipped first word is one subtraction away in the field log.
+        var log = new RecordingLog();
+        var harness = new Harness(log: log);
+
+        await harness.DictateAsync("hello world");
+
+        var entry = Assert.Single(log.Entries, e => e.Category == "dictation");
+        Assert.Equal("1000ms", entry.Field("held"));
+        Assert.Equal("0ms", entry.Field("lag"));
+    }
+
+    [Fact]
+    public async Task ACaptureThatNeverHeardSoundLogsTheLagAsUnknown()
+    {
+        var log = new RecordingLog();
+        var harness = new Harness(log: log) { SpeechDetected = false };
+        harness.Source.SilentCapture = true;
+
+        await harness.DictateAsync();
+
+        var entry = Assert.Single(log.Entries, e => e.Category == "dictation");
+        Assert.Equal("-", entry.Field("lag"));
+        Assert.Equal("MicrophoneSilent", entry.Field("result"));
+    }
+
+    [Fact]
     public async Task WhatTheStrategyMeasuredIsCarriedThroughRatherThanSummarised()
     {
         // The point of the exercise: SendInput's accepted/total, what the modifier gate saw, and

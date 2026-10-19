@@ -8,16 +8,29 @@ namespace Jane.Windows.Tests;
 /// The claim behind the clipped-first-word fix, checked rather than asserted.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Moving the device open off the key-down path only helps if starting an already-readied stream
 /// is genuinely cheap, and that is a property of a driver rather than of Jane. A machine where it
 /// is not must say so in its own diagnostic report instead of quietly still clipping words.
+/// </para>
+/// <para>
+/// "Cheap to start" turned out to be the wrong measurement. The start call on a Jabra Link 380
+/// returns in 10 ms and the stream then delivers nothing but zeros for another 360 to 570 ms,
+/// so a probe timing the call reported a pass on a device that was clipping the first half-second
+/// of every cold dictation. The probe now waits for the first buffer that carries sound, and that
+/// is the number it judges.
+/// </para>
 /// </remarks>
 public sealed class MicrophoneLatencyProbeTests
 {
     [Fact]
     public async Task AFastStartPassesAndReportsBothHalvesSeparately()
     {
-        var devices = new FakeCaptureDeviceFactory { OpenDelay = TimeSpan.FromMilliseconds(120) };
+        var devices = new FakeCaptureDeviceFactory
+        {
+            OpenDelay = TimeSpan.FromMilliseconds(120),
+            SoundDelay = TimeSpan.Zero,
+        };
 
         var result = await new MicrophoneLatencyProbe(devices).RunAsync(TestContext.Current.CancellationToken);
 
@@ -25,7 +38,34 @@ public sealed class MicrophoneLatencyProbeTests
         Assert.NotNull(result.Data);
         Assert.True(double.Parse(result.Data!["open_ms"], System.Globalization.CultureInfo.InvariantCulture) > 100);
         Assert.True(double.Parse(result.Data["start_ms"], System.Globalization.CultureInfo.InvariantCulture) < 50);
+        Assert.True(double.Parse(result.Data["first_sound_ms"], System.Globalization.CultureInfo.InvariantCulture) < 150);
         Assert.Contains("key press", result.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ADeviceThatWakesUpSilentIsAWarningThatNamesTheDeadZone()
+    {
+        // The Jabra Link 380, in miniature: a start that returns at once and a stream that says
+        // nothing for a third of a second. The old probe passed this device.
+        var devices = new FakeCaptureDeviceFactory { SoundDelay = TimeSpan.FromMilliseconds(300) };
+
+        var result = await new MicrophoneLatencyProbe(devices).RunAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(ProbeStatus.Warn, result.Status);
+        Assert.True(double.Parse(result.Data!["first_sound_ms"], System.Globalization.CultureInfo.InvariantCulture) >= 250);
+        Assert.Contains("first word", result.Detail, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("All the time", result.Remedy!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ADeviceThatNeverDeliversSoundIsAWarningRatherThanAHang()
+    {
+        var devices = new FakeCaptureDeviceFactory();
+
+        var result = await new MicrophoneLatencyProbe(devices).RunAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(ProbeStatus.Warn, result.Status);
+        Assert.Contains("no sound", result.Detail, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -33,7 +73,7 @@ public sealed class MicrophoneLatencyProbeTests
     {
         // The probe has to start the stream to time it. Leaving it running would hold a headset
         // in call mode after a diagnostic, which is precisely the state Jane refuses to create.
-        var devices = new FakeCaptureDeviceFactory();
+        var devices = new FakeCaptureDeviceFactory { SoundDelay = TimeSpan.Zero };
 
         _ = await new MicrophoneLatencyProbe(devices).RunAsync(TestContext.Current.CancellationToken);
 
@@ -60,7 +100,11 @@ public sealed class MicrophoneLatencyProbeTests
     {
         // A driver where starting is expensive means the fix did not land on this machine, and
         // the user should be told in the same words the symptom arrives in.
-        var devices = new FakeCaptureDeviceFactory { StartDelay = TimeSpan.FromMilliseconds(120) };
+        var devices = new FakeCaptureDeviceFactory
+        {
+            StartDelay = TimeSpan.FromMilliseconds(120),
+            SoundDelay = TimeSpan.Zero,
+        };
 
         var result = await new MicrophoneLatencyProbe(devices).RunAsync(TestContext.Current.CancellationToken);
 

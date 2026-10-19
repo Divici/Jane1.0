@@ -99,7 +99,8 @@ public sealed class SendInputInjector(
         }
 
         return new InjectionResult(
-            true, InjectionStrategy.Unicode, normalised.Length, Stopwatch.GetElapsedTime(startedAt))
+            true, InjectionStrategy.Unicode, normalised.Length, Stopwatch.GetElapsedTime(startedAt),
+            Detail: preflight.Note)
         {
             Diagnostics = diagnostics with
             {

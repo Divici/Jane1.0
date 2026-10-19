@@ -116,10 +116,35 @@ internal static class JaneMigrations
         CREATE INDEX ix_history_bypassed   ON history (bypassed);
         """;
 
+    /// <summary>
+    /// Version 2 -- the microphone is held open by default.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The old default started the capture stream on key-down and released it eight seconds after
+    /// the dictation. Measured on a Jabra Link 380, a started stream delivers nothing but zeros for
+    /// 360 to 570 ms while the headset's link comes up, and everything said in that window was
+    /// lost; 40 of the 49 "no speech" dictations in the field log were cold starts. A database
+    /// written under the old default holds the value itself, so changing the code's default would
+    /// have fixed fresh installs only.
+    /// </para>
+    /// <para>
+    /// A stored "only while dictating" cannot be told apart from one somebody chose, and this
+    /// prefers no clipped words to a quiet headset: the setting is one click to put back, and the
+    /// pill now says Connecting until the device is actually hearing, so the choice is an informed
+    /// one from here on. The grace window is moved only when it still holds the old default.
+    /// </para>
+    /// </remarks>
+    private const string MicrophoneAlwaysOpen = """
+        UPDATE settings SET value = '1' WHERE key = 'microphone.activation' AND value = '0';
+        UPDATE settings SET value = '60' WHERE key = 'microphone.idleReleaseSeconds' AND value = '8';
+        """;
+
     /// <summary>In ascending version order. The runner sorts anyway; this is for readers.</summary>
     public static IReadOnlyList<Migration> All { get; } =
     [
         Migration.Sql(1, "initial-schema", InitialSchema),
+        Migration.Sql(2, "microphone-always-open-default", MicrophoneAlwaysOpen),
     ];
 
     /// <summary>The version a freshly opened database ends up at.</summary>

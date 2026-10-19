@@ -288,10 +288,10 @@ public sealed class SettingsViewModel : ObservableObject, IDisposable
 
     public IReadOnlyList<ActivationChoice> Activations { get; } =
     [
-        new(MicrophoneActivation.WhileDictating, "Only while I'm dictating",
-            "The default, and the right answer for a Bluetooth headset: Windows drops a headset into its low-quality call mode for as long as any app is capturing, which quietly degrades everything else you are listening to. Jane starts capturing when you press the key and stops a few seconds after you finish. It keeps the device ready in between, which costs nothing audible and is what stops the first word going missing."),
         new(MicrophoneActivation.AlwaysOpen, "All the time",
-            "Captures from launch. Nothing to start on key-down at all, and the second before you pressed is always available. Right for a wired microphone; on a Bluetooth headset it keeps the headset in call mode permanently."),
+            "The default. The microphone is already running when you press the key, so Jane hears you from the first syllable and keeps the second before the press as well. Windows shows its microphone-in-use icon while Jane runs, and a Bluetooth headset stays in its call profile, which makes music through it sound worse until Jane quits."),
+        new(MicrophoneActivation.WhileDictating, "Only while I'm dictating",
+            "For a Bluetooth headset you also listen to music on: Windows drops a headset into its call profile for as long as any app is capturing, and this hands the headset back a minute after you stop dictating. The cost is at the start of each cold dictation. The device takes a moment to wake -- about half a second on a Bluetooth link -- and nothing said before then is heard, so the pill says Connecting until sound is actually arriving. Wait for Listening before you speak."),
     ];
 
     /// <summary>When Jane holds the microphone open. The Bluetooth question, in one control.</summary>
@@ -327,7 +327,7 @@ public sealed class SettingsViewModel : ObservableObject, IDisposable
         get => _current.Microphone.IdleReleaseSeconds;
         set
         {
-            var clamped = Math.Clamp(value, 0, 120);
+            var clamped = Math.Clamp(value, 0, 600);
             if (clamped == _current.Microphone.IdleReleaseSeconds)
             {
                 return;

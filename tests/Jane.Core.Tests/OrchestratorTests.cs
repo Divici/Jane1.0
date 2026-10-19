@@ -74,6 +74,83 @@ public sealed class OrchestratorTests
     }
 
     [Fact]
+    public async Task ACaptureThatNeverHeardSoundIsAMicrophoneProblemNotSilenceFromTheUser()
+    {
+        // "No speech detected" was the verdict on 40 cold starts in the field log, and on every
+        // one of them the user had spoken. A buffer of pure zeros is a device that was not
+        // hearing -- muted, or a Bluetooth link still waking -- and saying so is what lets the
+        // user fix it instead of repeating themselves at a microphone that is off.
+        var harness = new Harness { SpeechDetected = false };
+        harness.Source.SilentCapture = true;
+        harness.Source.CaptureLength = TimeSpan.FromSeconds(4);
+
+        await harness.DictateAsync();
+
+        Assert.Equal(PipelineFailure.MicrophoneSilent, harness.Orchestrator.Status.Failure);
+        Assert.Contains("muted", harness.Orchestrator.Status.Message!, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, harness.Recognizer.Calls);
+    }
+
+    [Fact]
+    public async Task AShortSilentCaptureSaysTheMicrophoneWasStillStarting()
+    {
+        // 1.6 seconds of audio, all zero, is the shape of a key let go before a waking headset
+        // delivered anything. The remedy is different from a muted microphone's, so the words are.
+        var harness = new Harness { SpeechDetected = false };
+        harness.Source.SilentCapture = true;
+        harness.Source.CaptureLength = TimeSpan.FromMilliseconds(1_600);
+
+        await harness.DictateAsync();
+
+        Assert.Equal(PipelineFailure.MicrophoneSilent, harness.Orchestrator.Status.Failure);
+        Assert.Contains("starting", harness.Orchestrator.Status.Message!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task AMicrophoneReportingAFaultIsNamedInsteadOfBlamingTheUserForSilence()
+    {
+        var harness = new Harness { SpeechDetected = false };
+        harness.Source.Error = "Capture on 'Jabra Link 380' failed: the device was removed.";
+
+        await harness.DictateAsync();
+
+        Assert.Equal(PipelineFailure.NoMicrophone, harness.Orchestrator.Status.Failure);
+        Assert.Equal("Capture on 'Jabra Link 380' failed: the device was removed.", harness.Orchestrator.Status.Message);
+    }
+
+    [Fact]
+    public async Task AQuietUserIsStillJustNoSpeech()
+    {
+        // The buffer carries a noise floor and the voice gate found no words in it. That is the
+        // user, not the device, and the message must not send them off to check a microphone
+        // that is working.
+        var harness = new Harness { SpeechDetected = false };
+
+        await harness.DictateAsync();
+
+        Assert.Equal(PipelineFailure.NoSpeech, harness.Orchestrator.Status.Failure);
+    }
+
+    [Fact]
+    public async Task AMicrophoneThatWillNotOpenAtStartupDoesNotStopTheSpeechEngineLoading()
+    {
+        // The two were coupled: an audio open that threw was wrapped as "the speech engine could
+        // not be loaded", which blamed a model that was fine and hid the microphone message that
+        // would have named the cause. A machine with no microphone still gets a loaded engine,
+        // and the key press reports the microphone.
+        var harness = new Harness { SpeechDetected = false };
+        harness.Source.OpenThrows = new InvalidOperationException("Windows reports no default communications input device.");
+
+        await harness.Orchestrator.StartAsync(TestContext.Current.CancellationToken);
+        Assert.True(harness.Recognizer.IsLoaded);
+
+        await harness.PressAndReleaseAsync();
+
+        Assert.Equal(PipelineFailure.NoMicrophone, harness.Orchestrator.Status.Failure);
+        Assert.Contains("no default communications input", harness.Orchestrator.Status.Message!, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task CancellationMidListeningYieldsZeroInjections()
     {
         var harness = new Harness();

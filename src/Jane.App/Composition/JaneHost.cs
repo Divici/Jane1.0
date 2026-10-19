@@ -730,10 +730,11 @@ public sealed class JaneHost : IAsyncDisposable
     {
         Orchestrator.StateChanged += OnPipelineStateChanged;
 
-        // The device opening is its own event, not a pipeline transition: under the default
-        // activation the pipeline reaches Arming while the driver is still handing over a stream.
-        // Without this the pill would sit on "Connecting..." until something else happened to
-        // republish it, which for a dictation in progress is not until the key comes up.
+        // The device going live is its own event, not a pipeline transition: with on-demand
+        // capture the pipeline reaches Arming while the device is still waking, and the first
+        // buffer with sound in it arrives half a second later on a Bluetooth headset. Without this
+        // the pill would sit on "Connecting..." until something else happened to republish it,
+        // which for a dictation in progress is not until the key comes up.
         _capture.StateChanged += OnCaptureStateChanged;
 
         // Applies the stored settings now and on every subsequent write, which is also what puts
@@ -774,9 +775,9 @@ public sealed class JaneHost : IAsyncDisposable
 
     /// <summary>Stops the hotkey firing without tearing the graph down.</summary>
     /// <remarks>
-    /// The hook stays installed. The microphone needs no special handling either way: under the
-    /// default activation it is only open while a dictation is running, and a paused Jane never
-    /// starts one.
+    /// The hook stays installed, and the microphone is left exactly as the activation setting has
+    /// it: held open if that is the setting, so the first dictation after un-pausing is as quick
+    /// as every other, and on demand otherwise. Pausing is about the key, not the device.
     /// </remarks>
     public void SetPaused(bool paused)
     {
@@ -838,7 +839,7 @@ public sealed class JaneHost : IAsyncDisposable
             _paused,
             fullscreen: _screenIsBusy,
             ready: IsReady,
-            microphoneOpen: _capture.State.IsOpen));
+            microphoneLive: _capture.State.IsLive));
     }
 
     public async ValueTask DisposeAsync()

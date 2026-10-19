@@ -110,30 +110,30 @@ public sealed class IdleOverlayTests
     // ------------------------------------------------------------------ connecting
 
     [Fact]
-    public void ListeningIsNotClaimedUntilTheMicrophoneIsActuallyOpen()
+    public void ListeningIsNotClaimedUntilTheMicrophoneIsActuallyDeliveringSound()
     {
         // The cause of the clipped first word, and it is a feedback problem rather than an audio
-        // one. With the device opened on key-down, the pill said "Listening" the instant the key
-        // went down -- while the driver was still handing over a stream, which on a Bluetooth
-        // headset means a whole profile renegotiation. So Jane invited the user to speak into a
-        // microphone it did not yet have, and the audio they produced in that window never
-        // existed to be recorded.
+        // one. The pill said "Listening" the instant the start call returned -- and on a Jabra
+        // Link 380 the stream then hands back digital zeros for another 360 to 570 ms while the
+        // headset's link comes up. So Jane invited the user to speak into a microphone that was
+        // not hearing them yet, and the words they said in that window never existed to be
+        // recorded. "Live" means a buffer with sound in it has arrived, not that a call returned.
         var live = new OverlayStatus(OverlayState.Listening, "Listening", 0.3f);
 
         var status = IdleOverlay.For(
-            live, new OverlaySettings(), RightControl, paused: false, microphoneOpen: false);
+            live, new OverlaySettings(), RightControl, paused: false, microphoneLive: false);
 
         Assert.Equal(OverlayState.Connecting, status.State);
         Assert.Contains("onnecting", status.Message, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void ListeningIsClaimedTheMomentTheMicrophoneIsOpen()
+    public void ListeningIsClaimedTheMomentTheMicrophoneDeliversSound()
     {
         var live = new OverlayStatus(OverlayState.Listening, "Listening", 0.3f);
 
         var status = IdleOverlay.For(
-            live, new OverlaySettings(), RightControl, paused: false, microphoneOpen: true);
+            live, new OverlaySettings(), RightControl, paused: false, microphoneLive: true);
 
         Assert.Same(live, status);
     }
@@ -149,7 +149,7 @@ public sealed class IdleOverlayTests
         var live = new OverlayStatus(state, "whatever the pipeline said");
 
         var status = IdleOverlay.For(
-            live, new OverlaySettings(), RightControl, paused: false, microphoneOpen: false);
+            live, new OverlaySettings(), RightControl, paused: false, microphoneLive: false);
 
         Assert.Same(live, status);
     }

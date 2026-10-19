@@ -135,6 +135,21 @@ public sealed record TargetWindow(
     public bool MatchesIdentity(TargetWindow other) =>
         Handle == other.Handle && ProcessId == other.ProcessId &&
         string.Equals(ProcessName, other.ProcessName, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Same running application, whichever of its windows is in front.
+    /// </summary>
+    /// <remarks>
+    /// Chrome's address-bar suggestions, an Electron app's command palette and Cursor's own
+    /// pop-ups are all separate top-level windows of the process the user was dictating into. Two
+    /// of the five injection failures in the field log were "focus moved from chrome to chrome":
+    /// the same process, a different handle, and a finished dictation thrown away. Typing into
+    /// the window that has focus in the same application is what the user asked for; typing
+    /// into a different application is the leak the identity check exists to stop.
+    /// </remarks>
+    public bool MatchesApplication(TargetWindow other) =>
+        ProcessId != 0 && ProcessId == other.ProcessId &&
+        string.Equals(ProcessName, other.ProcessName, StringComparison.OrdinalIgnoreCase);
 }
 
 public interface ITextInjector

@@ -73,6 +73,17 @@ public enum PipelineFailure
     /// Something threw that nothing was written to expect. The detail is in the log.
     /// </summary>
     Unexpected,
+
+    /// <summary>
+    /// The capture held nothing but digital zeros: the device was not hearing, whether because
+    /// it is muted or because a Bluetooth link was still waking when the key came up.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from <see cref="NoSpeech"/> on purpose. A real microphone that heard a quiet room
+    /// delivers a noise floor; one that delivers exact silence was not delivering at all. The
+    /// field log recorded 40 of these as "No speech detected", and the user had spoken every time.
+    /// </remarks>
+    MicrophoneSilent,
 }
 
 /// <param name="Failure">Meaningful only when <paramref name="State"/> is <see cref="PipelineState.Failed"/>.</param>
@@ -117,6 +128,7 @@ public sealed record PipelineStatus(
         PipelineFailure.EngineStillLoading => "Still starting up. Try again in a moment.",
         PipelineFailure.EditModeUnavailable => "Edit Mode is not available here.",
         PipelineFailure.Unexpected => "Something went wrong. Jane's log has the details.",
+        PipelineFailure.MicrophoneSilent => "The microphone sent no sound. Check it is not muted, and that Windows is using the right one.",
         _ => "Something went wrong.",
     };
 }

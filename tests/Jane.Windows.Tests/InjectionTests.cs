@@ -198,6 +198,45 @@ public sealed class InjectionTests
     }
 
     [Fact]
+    public async Task FocusMovingToAnotherWindowOfTheSameAppStillInjects()
+    {
+        // Two of the five injection failures in the field log read "Focus moved from chrome to
+        // chrome": the address-bar suggestion pop-up is its own top-level window, and so is an
+        // Electron command palette. Same process, different handle, a finished dictation thrown
+        // away. The window with focus in the same application is where the user is typing.
+        var popup = Notepad with { Handle = 0x00CAFE, WindowClass = "Notepad_Popup", WindowTitle = "" };
+        var send = new FakeSendInput();
+        var injector = new SendInputInjector(
+            new FakeFocusTracker(popup), new FakeWindowLiveness(), send, new ModifierGate(new FakeAsyncKeyState(), FastGate));
+
+        var result = await injector.InjectAsync("hello", Notepad, TestContext.Current.CancellationToken);
+
+        Assert.True(result.Succeeded, result.Detail);
+        Assert.Equal(5, result.CharactersSent);
+        Assert.NotEmpty(send.AllRecords);
+
+        // Said on the result, so a dictation that landed in an unexpected window of the right app
+        // is explicable from history rather than a mystery.
+        Assert.Contains("notepad", result.Detail!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ThePasteAlsoFollowsFocusWithinTheSameApp()
+    {
+        var popup = Notepad with { Handle = 0x00CAFE };
+        var clipboard = new FakeClipboard();
+        var send = new FakeSendInput();
+        var injector = new ClipboardInjector(
+            new FakeFocusTracker(popup), new FakeWindowLiveness(), clipboard, send,
+            new ModifierGate(new FakeAsyncKeyState(), FastGate), NoSettle);
+
+        var result = await injector.InjectAsync(new string('x', 300), Notepad, TestContext.Current.CancellationToken);
+
+        Assert.True(result.Succeeded, result.Detail);
+        Assert.Equal(4, result.Diagnostics.RecordsAccepted);
+    }
+
+    [Fact]
     public async Task ARecycledHandleInADifferentProcessCountsAsAChangedTarget()
     {
         // HWNDs are recycled. The handle alone matching is not identity -- that is exactly what
