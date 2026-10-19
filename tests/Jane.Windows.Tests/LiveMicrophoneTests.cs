@@ -196,15 +196,17 @@ public sealed class LiveMicrophoneTests
     }
 
     [Fact]
-    public void TheOnDemandGraceWindowIsLongEnoughForAWorkingSession()
+    public void TheOnDemandGraceWindowHandsAHeadsetBackQuickly()
     {
-        // From the field log, corrected for how long each key was held: 53% of dictations found a
-        // warm microphone at eight seconds, 71% at sixty. A minute of call profile after the last
-        // dictation is the price, and the slider goes down to zero for anyone who would rather
-        // pay the wake-up every time.
+        // Eight seconds: long enough that a correction straight after a dictation finds a warm
+        // microphone, short enough that music through a Bluetooth headset is back in stereo
+        // before the next track. A longer window finds a warm microphone more often (53% of the
+        // dictations in the field log at eight seconds, 71% at sixty) but keeps the headset in its
+        // call profile for that long after every dictation, and the owner chose the music. The
+        // slider in Settings runs from zero to five minutes for anyone who weighs it differently.
         var options = new AudioCaptureOptions();
 
-        Assert.Equal(TimeSpan.FromSeconds(60), options.IdleRelease);
+        Assert.Equal(TimeSpan.FromSeconds(8), options.IdleRelease);
     }
 
     private static async Task WaitUntil(Func<bool> condition)

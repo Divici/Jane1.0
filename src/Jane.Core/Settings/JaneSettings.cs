@@ -67,13 +67,15 @@ public sealed record HotkeySettings(
 /// </param>
 /// <param name="IdleReleaseSeconds">
 /// How long the device stays open after a dictation under
-/// <see cref="MicrophoneActivation.WhileDictating"/>. A minute: in the field log, corrected for
-/// how long each key was held, 53% of dictations found a warm microphone at eight seconds and 71%
-/// at sixty.
+/// <see cref="MicrophoneActivation.WhileDictating"/>. Eight seconds: a correction straight after
+/// a dictation finds a warm microphone, and a Bluetooth headset is back in stereo before the next
+/// track. A longer window finds a warm microphone more often (53% of the dictations in the field
+/// log at eight seconds, 71% at sixty) at the price of the headset's call profile for that long
+/// after every dictation; the slider in Settings runs from zero to five minutes.
 /// </param>
 public sealed record MicrophoneSettings(
     MicrophoneActivation Activation = MicrophoneActivation.WhileDictating,
-    int IdleReleaseSeconds = 60);
+    int IdleReleaseSeconds = 8);
 
 /// <param name="IdleUnloadSeconds">
 /// How long after the last dictation Jane issues its single explicit unload. The request-level

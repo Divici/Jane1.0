@@ -132,9 +132,11 @@ public interface ICaptureDeviceFactory
 /// </param>
 /// <param name="IdleRelease">
 /// How long an on-demand device stays open after a dictation ends. Zero releases it immediately,
-/// which makes every dictation a cold start. A minute by default: in the field log, corrected for
-/// how long each key was held, 53% of dictations found a warm microphone at eight seconds and
-/// 71% at sixty, and a headset is back in stereo a minute after the user stops dictating.
+/// which makes every dictation a cold start. Eight seconds by default: a correction straight
+/// after a dictation finds a warm microphone, and a Bluetooth headset is back in stereo before
+/// the next track. A longer window finds a warm microphone more often (53% of the dictations in
+/// the field log at eight seconds, 71% at sixty) but keeps the headset in its call profile for
+/// that long after every dictation; the user has a slider for the trade.
 /// </param>
 public sealed record AudioCaptureOptions(
     TimeSpan PreRoll,
@@ -157,8 +159,8 @@ public sealed record AudioCaptureOptions(
     {
     }
 
-    /// <summary>Sixty seconds. The reasoning is on <see cref="IdleRelease"/>.</summary>
-    public static readonly TimeSpan DefaultIdleRelease = TimeSpan.FromSeconds(60);
+    /// <summary>Eight seconds. The reasoning is on <see cref="IdleRelease"/>.</summary>
+    public static readonly TimeSpan DefaultIdleRelease = TimeSpan.FromSeconds(8);
 
     /// <summary>These options with a routing applied, leaving everything else alone.</summary>
     public AudioCaptureOptions With(MicrophoneRouting routing)

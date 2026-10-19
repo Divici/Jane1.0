@@ -158,8 +158,8 @@ A release is cut by pushing a tag. The workflow in `.github/workflows/release.ym
 installer, installs and uninstalls it on a clean machine, and only then publishes it:
 
 ```powershell
-git tag v1.1.2
-git push origin v1.1.2
+git tag v1.2.0
+git push origin v1.2.0
 ```
 
 ### Signing and uiAccess

@@ -116,35 +116,10 @@ internal static class JaneMigrations
         CREATE INDEX ix_history_bypassed   ON history (bypassed);
         """;
 
-    /// <summary>
-    /// Version 2 -- the on-demand microphone stays open for a minute after a dictation, not eight
-    /// seconds.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Measured on a Jabra Link 380, a capture stream started on key-down delivers nothing but
-    /// zeros for 360 to 570 ms while the headset's link comes up, and everything said in that
-    /// window is lost; 40 of the 49 "no speech" dictations in the field log were cold starts. The
-    /// grace window is the only lever that does not cost the headset its stereo profile all day:
-    /// corrected for how long each key was held, 53% of dictations found a warm microphone under
-    /// eight seconds and 71% under sixty. A database written under the old default holds the
-    /// value itself, so changing the code's default would have fixed fresh installs only.
-    /// </para>
-    /// <para>
-    /// Eight was the default and is replaced; any other number was typed by a person and is left
-    /// alone. The activation mode is not touched: on-demand capture is still the default, because
-    /// holding the device open keeps a Bluetooth headset in call quality for as long as Jane runs.
-    /// </para>
-    /// </remarks>
-    private const string MicrophoneGraceWindow = """
-        UPDATE settings SET value = '60' WHERE key = 'microphone.idleReleaseSeconds' AND value = '8';
-        """;
-
     /// <summary>In ascending version order. The runner sorts anyway; this is for readers.</summary>
     public static IReadOnlyList<Migration> All { get; } =
     [
         Migration.Sql(1, "initial-schema", InitialSchema),
-        Migration.Sql(2, "microphone-grace-window-sixty-seconds", MicrophoneGraceWindow),
     ];
 
     /// <summary>The version a freshly opened database ends up at.</summary>
