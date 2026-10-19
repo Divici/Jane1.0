@@ -288,10 +288,10 @@ public sealed class SettingsViewModel : ObservableObject, IDisposable
 
     public IReadOnlyList<ActivationChoice> Activations { get; } =
     [
-        new(MicrophoneActivation.AlwaysOpen, "All the time",
-            "The default. The microphone is already running when you press the key, so Jane hears you from the first syllable and keeps the second before the press as well. Windows shows its microphone-in-use icon while Jane runs, and a Bluetooth headset stays in its call profile, which makes music through it sound worse until Jane quits."),
         new(MicrophoneActivation.WhileDictating, "Only while I'm dictating",
-            "For a Bluetooth headset you also listen to music on: Windows drops a headset into its call profile for as long as any app is capturing, and this hands the headset back a minute after you stop dictating. The cost is at the start of each cold dictation. The device takes a moment to wake -- about half a second on a Bluetooth link -- and nothing said before then is heard, so the pill says Connecting until sound is actually arriving. Wait for Listening before you speak."),
+            "The default. Jane opens the microphone when you press the key and lets go of it a while after you finish, so a Bluetooth headset you also listen to music on is in its call profile only while you dictate. The device takes a moment to wake -- about half a second on a Bluetooth link -- and nothing said before then is heard, so the pill says Connecting until sound is actually arriving. Wait for Listening before you speak."),
+        new(MicrophoneActivation.AlwaysOpen, "All the time",
+            "The microphone is already running when you press the key, so Jane hears you from the first syllable and keeps the second before the press as well. Windows shows its microphone-in-use icon while Jane runs, and a Bluetooth headset stays in its call profile, which makes music through it sound like a phone call until Jane quits."),
     ];
 
     /// <summary>When Jane holds the microphone open. The Bluetooth question, in one control.</summary>

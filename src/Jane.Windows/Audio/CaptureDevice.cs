@@ -126,8 +126,9 @@ public interface ICaptureDeviceFactory
 /// </param>
 /// <param name="DeviceId">Explicit endpoint, or null for the default communications device.</param>
 /// <param name="Activation">
-/// Whether the device is held open or started per dictation. Held open by default -- see
-/// <see cref="MicrophoneActivation"/> for the measurement that decided it.
+/// Whether the device is held open or started per dictation. Started per dictation by default, so
+/// a Bluetooth headset keeps its stereo profile between dictations -- see
+/// <see cref="MicrophoneActivation"/> for the wake-up cost that comes with it.
 /// </param>
 /// <param name="IdleRelease">
 /// How long an on-demand device stays open after a dictation ends. Zero releases it immediately,
@@ -141,7 +142,7 @@ public sealed record AudioCaptureOptions(
     TimeSpan ReconnectInterval,
     bool AutoReconnect,
     string? DeviceId,
-    MicrophoneActivation Activation = MicrophoneActivation.AlwaysOpen,
+    MicrophoneActivation Activation = MicrophoneActivation.WhileDictating,
     TimeSpan IdleRelease = default)
 {
     public AudioCaptureOptions()
@@ -151,7 +152,7 @@ public sealed record AudioCaptureOptions(
             TimeSpan.FromSeconds(2),
             AutoReconnect: true,
             DeviceId: null,
-            Activation: MicrophoneActivation.AlwaysOpen,
+            Activation: MicrophoneActivation.WhileDictating,
             IdleRelease: DefaultIdleRelease)
     {
     }

@@ -96,7 +96,7 @@ public sealed class MicrophoneLatencyProbe(ICaptureDeviceFactory? devices = null
                 Name,
                 ProbeStatus.Warn,
                 detail + $" That is over the {Milliseconds(FirstSoundBudget)} ms budget: anything said before the device is awake is never recorded, so with the microphone set to open only while dictating the first word of a dictation can be clipped.",
-                Remedy: "Keep the microphone setting on \"All the time\", the default, which removes the wait entirely. \"Only while I'm dictating\" is for a Bluetooth headset that must drop back to stereo between dictations, and the pill then says Connecting until the device is actually hearing you.",
+                Remedy: "Wait for the pill to say Listening before you speak; it says Connecting until the device is actually hearing you. Setting the microphone to \"All the time\" removes the wait entirely, at the cost of a Bluetooth headset staying in its call profile for as long as Jane runs.",
                 Data: data);
         }
         catch (AudioDeviceException ex)

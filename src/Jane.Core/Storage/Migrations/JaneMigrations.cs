@@ -117,26 +117,26 @@ internal static class JaneMigrations
         """;
 
     /// <summary>
-    /// Version 2 -- the microphone is held open by default.
+    /// Version 2 -- the on-demand microphone stays open for a minute after a dictation, not eight
+    /// seconds.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The old default started the capture stream on key-down and released it eight seconds after
-    /// the dictation. Measured on a Jabra Link 380, a started stream delivers nothing but zeros for
-    /// 360 to 570 ms while the headset's link comes up, and everything said in that window was
-    /// lost; 40 of the 49 "no speech" dictations in the field log were cold starts. A database
-    /// written under the old default holds the value itself, so changing the code's default would
-    /// have fixed fresh installs only.
+    /// Measured on a Jabra Link 380, a capture stream started on key-down delivers nothing but
+    /// zeros for 360 to 570 ms while the headset's link comes up, and everything said in that
+    /// window is lost; 40 of the 49 "no speech" dictations in the field log were cold starts. The
+    /// grace window is the only lever that does not cost the headset its stereo profile all day:
+    /// corrected for how long each key was held, 53% of dictations found a warm microphone under
+    /// eight seconds and 71% under sixty. A database written under the old default holds the
+    /// value itself, so changing the code's default would have fixed fresh installs only.
     /// </para>
     /// <para>
-    /// A stored "only while dictating" cannot be told apart from one somebody chose, and this
-    /// prefers no clipped words to a quiet headset: the setting is one click to put back, and the
-    /// pill now says Connecting until the device is actually hearing, so the choice is an informed
-    /// one from here on. The grace window is moved only when it still holds the old default.
+    /// Eight was the default and is replaced; any other number was typed by a person and is left
+    /// alone. The activation mode is not touched: on-demand capture is still the default, because
+    /// holding the device open keeps a Bluetooth headset in call quality for as long as Jane runs.
     /// </para>
     /// </remarks>
-    private const string MicrophoneAlwaysOpen = """
-        UPDATE settings SET value = '1' WHERE key = 'microphone.activation' AND value = '0';
+    private const string MicrophoneGraceWindow = """
         UPDATE settings SET value = '60' WHERE key = 'microphone.idleReleaseSeconds' AND value = '8';
         """;
 
@@ -144,7 +144,7 @@ internal static class JaneMigrations
     public static IReadOnlyList<Migration> All { get; } =
     [
         Migration.Sql(1, "initial-schema", InitialSchema),
-        Migration.Sql(2, "microphone-always-open-default", MicrophoneAlwaysOpen),
+        Migration.Sql(2, "microphone-grace-window-sixty-seconds", MicrophoneGraceWindow),
     ];
 
     /// <summary>The version a freshly opened database ends up at.</summary>

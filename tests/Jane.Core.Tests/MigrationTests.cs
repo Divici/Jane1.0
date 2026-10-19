@@ -122,12 +122,13 @@ public sealed class MigrationTests : IDisposable
     }
 
     [Fact]
-    public async Task MigrationTwo_MovesTheOldMicrophoneDefaultOntoAlwaysOpen()
+    public async Task MigrationTwo_MovesTheOldGraceWindowOntoAMinuteAndLeavesOnDemandCaptureAlone()
     {
-        // The old default was "only while dictating" with an eight-second grace window, and it
-        // clipped the first half-second of every cold dictation on a Bluetooth headset. A database
-        // written under that default carries the value itself, so changing the code's default
-        // alone would have fixed fresh installs and nobody else.
+        // The old default grace window was eight seconds, and under it only about half of the
+        // dictations in the field log found a warm microphone. A database written under that
+        // default carries the value itself, so changing the code's default alone would have fixed
+        // fresh installs and nobody else. On-demand capture itself stays: it is what keeps a
+        // Bluetooth headset in stereo between dictations.
         using (var v1 = JaneDatabase.Open(Paths, [JaneMigrations.All[0]]))
         {
             var settings = new SettingsRepository(v1);
@@ -139,7 +140,7 @@ public sealed class MigrationTests : IDisposable
         using var current = JaneDatabase.Open(Paths);
         var migrated = new SettingsRepository(current).Read();
 
-        Assert.Equal(MicrophoneActivation.AlwaysOpen, migrated.Microphone.Activation);
+        Assert.Equal(MicrophoneActivation.WhileDictating, migrated.Microphone.Activation);
         Assert.Equal(60, migrated.Microphone.IdleReleaseSeconds);
     }
 
@@ -158,26 +159,26 @@ public sealed class MigrationTests : IDisposable
         using var current = JaneDatabase.Open(Paths);
         var migrated = new SettingsRepository(current).Read();
 
-        Assert.Equal(MicrophoneActivation.AlwaysOpen, migrated.Microphone.Activation);
+        Assert.Equal(MicrophoneActivation.WhileDictating, migrated.Microphone.Activation);
         Assert.Equal(20, migrated.Microphone.IdleReleaseSeconds);
     }
 
     [Fact]
     public async Task MigrationTwo_IsAppliedOnceAndNeverUndoesALaterChoice()
     {
-        // Somebody who reads the new description and still wants on-demand capture for their
-        // headset must get to keep it across every later launch.
+        // Somebody who reads the description and still wants the headset back in stereo eight
+        // seconds after dictating must get to keep that number across every later launch.
         using (var database = JaneDatabase.Open(Paths))
         {
             var settings = new SettingsRepository(database);
             await settings.UpdateAsync(
-                s => s with { Microphone = s.Microphone with { Activation = MicrophoneActivation.WhileDictating } },
+                s => s with { Microphone = s.Microphone with { IdleReleaseSeconds = 8 } },
                 TestContext.Current.CancellationToken);
         }
 
         using var reopened = JaneDatabase.Open(Paths);
 
-        Assert.Equal(MicrophoneActivation.WhileDictating, new SettingsRepository(reopened).Read().Microphone.Activation);
+        Assert.Equal(8, new SettingsRepository(reopened).Read().Microphone.IdleReleaseSeconds);
     }
 
     [Fact]

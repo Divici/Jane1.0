@@ -205,7 +205,7 @@
                         </c:SettingsGroup>
 
                         <c:SettingsGroup Header="When Jane listens"
-                                         Description="Held open, the microphone hears you from the instant you press the key. Started on demand, it takes a moment to wake -- about half a second on a Bluetooth headset -- and the words you say before then are lost, which is why that mode shows Connecting first. On-demand is still worth it on a Bluetooth headset you listen to music on: Windows drops a headset into its narrowband call profile for as long as any app is capturing. Whichever you choose, Jane opts out of the attenuation Windows applies to other apps while a communications microphone is live, so your music does not drop each time you dictate.">
+                                         Description="By default Jane opens the microphone when you press the key, because Windows drops a Bluetooth headset into its narrowband call profile for as long as any app is capturing, and music through it only sounds right once the microphone is closed again. The cost is that a device takes a moment to wake -- about half a second on a Bluetooth headset -- and the words you say before then are lost, which is why the pill shows Connecting first. Held open all the time, the microphone hears you from the instant you press the key, at the price of the call profile for as long as Jane runs. Whichever you choose, Jane opts out of the attenuation Windows applies to other apps while a communications microphone is live, so your music does not drop each time you dictate.">
                             <StackPanel>
                                 <c:SettingRow Header="Open the microphone">
                                     <ComboBox Style="{StaticResource JaneComboBox}"
@@ -222,7 +222,7 @@
                                            Text="{Binding MicrophoneActivationChoice.Description}" />
 
                                 <c:SettingRow Header="Keep it open afterwards"
-                                              Description="Seconds to hold the microphone after a dictation ends. A run of quick dictations then pays the wake-up once instead of once each, and every one after the first keeps its second of pre-roll. Zero releases it immediately."
+                                              Description="Seconds to hold the microphone after a dictation ends. A run of quick dictations then pays the wake-up once instead of once each, and every one after the first keeps its second of pre-roll. A Bluetooth headset stays in its call profile for this long after you let go, so shorten it if music quality matters more than the next dictation starting instantly. Zero releases it immediately."
                                               Visibility="{Binding IsMicrophoneOnDemand, Converter={StaticResource BoolToVisibility}}">
                                     <StackPanel Orientation="Horizontal">
                                         <Slider Style="{StaticResource JaneSlider}"

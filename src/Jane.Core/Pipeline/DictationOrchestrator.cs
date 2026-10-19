@@ -870,7 +870,7 @@ public sealed class DictationOrchestrator : IAsyncDisposable
             Fail(
                 PipelineFailure.MicrophoneSilent,
                 audio.Duration <= StillStartingCeiling
-                    ? "The microphone was still starting when you let go. Hold the key a little longer, or set it to stay open in Settings."
+                    ? "The microphone was still starting when you let go. Wait for Listening before you speak, or set the microphone to stay open in Settings."
                     : PipelineStatus.DefaultMessageFor(PipelineFailure.MicrophoneSilent));
             return;
         }

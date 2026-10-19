@@ -111,11 +111,14 @@ public sealed record AudioSourceState(
 public enum MicrophoneActivation
 {
     /// <summary>
-    /// Capture starts when the hotkey goes down and stops a while after the dictation ends.
+    /// Default. Capture starts when the hotkey goes down and stops a while after the dictation
+    /// ends.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// For Bluetooth headsets. The device is readied ahead of time -- at launch and again straight
+    /// Chosen for Bluetooth headsets: Windows holds a headset in its narrowband call profile for
+    /// as long as any application is capturing, and music through it sounds like a phone call
+    /// until the stream closes. The device is readied ahead of time -- at launch and again straight
     /// after each idle release, because a capture stream cannot be started twice -- so key-down
     /// pays only for starting the stream. Starting is quick to <em>return</em>; the device then
     /// hands back digital silence until it is actually awake, half a second on a Bluetooth link,
@@ -130,8 +133,9 @@ public enum MicrophoneActivation
     WhileDictating,
 
     /// <summary>
-    /// Default. Opened at startup and held. Nothing to wake on key-down, a full second of pre-roll
-    /// behind every press, and a microphone that is in use for as long as Jane is.
+    /// Opened at startup and held. Nothing to wake on key-down, a full second of pre-roll behind
+    /// every press, and a microphone that is in use -- and a Bluetooth headset that is in its call
+    /// profile -- for as long as Jane is running.
     /// </summary>
     AlwaysOpen,
 }

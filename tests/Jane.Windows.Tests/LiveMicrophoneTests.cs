@@ -184,23 +184,24 @@ public sealed class LiveMicrophoneTests
     }
 
     [Fact]
-    public void TheShippedDefaultHoldsTheMicrophoneOpen()
+    public void TheShippedDefaultStartsTheMicrophoneOnDemand()
     {
-        // The decision the measurement forced. Starting on key-down loses whatever is said in the
-        // dead zone, and no amount of readying the client ahead of time shortens it, because the
-        // zone is the headset's link coming up rather than anything the host does.
+        // Holding the device open would remove the wake-up dead zone, but it also holds a
+        // Bluetooth headset in its narrowband call profile for as long as Jane runs, and music
+        // quality won. The dead zone is made visible instead: the pill says Connecting until the
+        // first buffer with sound in it, so the user knows when the microphone is really hearing.
         var options = new AudioCaptureOptions();
 
-        Assert.Equal(MicrophoneActivation.AlwaysOpen, options.Activation);
+        Assert.Equal(MicrophoneActivation.WhileDictating, options.Activation);
     }
 
     [Fact]
     public void TheOnDemandGraceWindowIsLongEnoughForAWorkingSession()
     {
         // From the field log, corrected for how long each key was held: 53% of dictations found a
-        // warm microphone at eight seconds, 71% at sixty. The window only matters to somebody who
-        // chose on-demand capture to spare a Bluetooth headset, and a minute is still well short
-        // of "the headset sounds worse all day".
+        // warm microphone at eight seconds, 71% at sixty. A minute of call profile after the last
+        // dictation is the price, and the slider goes down to zero for anyone who would rather
+        // pay the wake-up every time.
         var options = new AudioCaptureOptions();
 
         Assert.Equal(TimeSpan.FromSeconds(60), options.IdleRelease);

@@ -59,10 +59,11 @@ public sealed record HotkeySettings(
 }
 
 /// <param name="Activation">
-/// When Jane holds a capture stream open. Held open by default: a stream started on key-down
-/// delivers digital silence while the device wakes -- half a second on a Bluetooth headset,
-/// measured -- and the words said in that window are never recorded. See the enum for the
-/// measurement, and for why on-demand capture is still offered.
+/// When Jane holds a capture stream open. Started on key-down by default, so a Bluetooth headset
+/// is in its call profile only while Jane is using it and music through it stays in stereo the
+/// rest of the time. A stream started on key-down delivers digital silence while the device wakes
+/// -- half a second on a Bluetooth headset, measured -- so the overlay says Connecting until sound
+/// is actually arriving. See the enum for the measurement and the alternative.
 /// </param>
 /// <param name="IdleReleaseSeconds">
 /// How long the device stays open after a dictation under
@@ -71,7 +72,7 @@ public sealed record HotkeySettings(
 /// at sixty.
 /// </param>
 public sealed record MicrophoneSettings(
-    MicrophoneActivation Activation = MicrophoneActivation.AlwaysOpen,
+    MicrophoneActivation Activation = MicrophoneActivation.WhileDictating,
     int IdleReleaseSeconds = 60);
 
 /// <param name="IdleUnloadSeconds">
